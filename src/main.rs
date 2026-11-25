@@ -1,4 +1,4 @@
-use onehundo_client::core::config::{save_credentials, DaemonConfig};
+use onehundo_client::core::config::{save_credentials, DaemonConfig, WatchedObservationDir};
 use onehundo_client::core::engine::DaemonEngine;
 use onehundo_client::core::lockfile::{default_lock_path, InstanceLock, LockAcquireError};
 use onehundo_client::diagnostics::server::start_health_http_server;
@@ -37,18 +37,20 @@ fn print_help() {
     println!(
         "onehundod v0.1.0 - OneHundo Local Daemon\n\n\
          OPTIONS:\n\
-         \t--socket <path>        Unix socket path (default: $XDG_RUNTIME_DIR/onehundo.sock or /tmp/onehundo.sock)\n\
-         \t--lock-file <path>     Single-instance lockfile path (default: $XDG_RUNTIME_DIR/onehundod.lock)\n\
-         \t--config-dir <path>    Config directory (default: ~/.config/onehundo)\n\
-         \t--data-dir <path>      Data/SQLite directory (default: ~/.local/share/onehundo)\n\
-         \t--pack <file.onehundo> Load a specific .onehundo pack file\n\
-         \t--packs-dir <path>     Additional directory to scan for .onehundo packs\n\
-         \t--health-addr <addr>   Game Health HTTP bind addr (default: 127.0.0.1:19850, 'none' to disable)\n\
-         \t--platform-url <url>   onehundo-platform base URL (e.g. https://api.onehundo.org)\n\
-         \t--api-key <key>        Save API key into credentials.json (never logged)\n\
-         \t--sync-interval-ms <n> Background sync interval in ms (default: 2500)\n\
-         \t--no-notify            Disable OS notify-send desktop toasts\n\
-         \t-h, --help             Print help"
+         \t--socket <path>           Unix socket path (default: $XDG_RUNTIME_DIR/onehundo.sock or /tmp/onehundo.sock)\n\
+         \t--lock-file <path>        Single-instance lockfile path (default: $XDG_RUNTIME_DIR/onehundod.lock)\n\
+         \t--config-dir <path>       Config directory (default: ~/.config/onehundo)\n\
+         \t--data-dir <path>         Data/SQLite directory (default: ~/.local/share/onehundo)\n\
+         \t--pack <file.onehundo>    Load a specific .onehundo pack file\n\
+         \t--packs-dir <path>        Additional directory to scan for .onehundo packs\n\
+         \t--watch-dir <path>        Directory to watch for Plane C external observation exports\n\
+         \t--watch-interval-ms <n>   Observation directory poll interval in ms (default: 5000)\n\
+         \t--health-addr <addr>      Game Health HTTP bind addr (default: 127.0.0.1:19850, 'none' to disable)\n\
+         \t--platform-url <url>      onehundo-platform base URL (e.g. https://api.onehundo.org)\n\
+         \t--api-key <key>           Save API key into credentials.json (never logged)\n\
+         \t--sync-interval-ms <n>    Background sync interval in ms (default: 2500)\n\
+         \t--no-notify               Disable OS notify-send desktop toasts\n\
+         \t-h, --help                Print help"
     );
 }
 
@@ -93,6 +95,19 @@ fn main() {
             "--packs-dir" if i + 1 < args.len() => {
                 i += 1;
                 cfg.packs_dirs.push(PathBuf::from(&args[i]));
+            }
+            "--watch-dir" if i + 1 < args.len() => {
+                i += 1;
+                cfg.watched_observation_dirs.push(WatchedObservationDir {
+                    path: PathBuf::from(&args[i]),
+                    canonical_game_id: None,
+                });
+            }
+            "--watch-interval-ms" if i + 1 < args.len() => {
+                i += 1;
+                if let Ok(ms) = args[i].parse::<u64>() {
+                    cfg.watch_poll_interval_ms = ms;
+                }
             }
             "--health-addr" if i + 1 < args.len() => {
                 i += 1;
@@ -205,6 +220,46 @@ fn main() {
         None
     };
 
+    let watch_handle = if !engine.config.watched_observation_dirs.is_empty() {
+        let eng = Arc::clone(&engine);
+        let sd = Arc::clone(&shutdown);
+        let interval_ms = engine.config.watch_poll_interval_ms.max(250);
+        Some(thread::spawn(move || {
+            let initial = eng.poll_watched_observation_dirs();
+            if initial.imported > 0 || !initial.errors.is_empty() {
+                println!(
+                    "[onehundod-watch] initial scan: {} imported, {} deduplicated, {} errors",
+                    initial.imported,
+                    initial.deduplicated,
+                    initial.errors.len()
+                );
+            }
+            while !sd.load(Ordering::Relaxed) && !SIGNAL_STOP.load(Ordering::Relaxed) {
+                let mut slept = 0u64;
+                while slept < interval_ms
+                    && !sd.load(Ordering::Relaxed)
+                    && !SIGNAL_STOP.load(Ordering::Relaxed)
+                {
+                    let step = (interval_ms - slept).min(100);
+                    thread::sleep(Duration::from_millis(step));
+                    slept += step;
+                }
+                if sd.load(Ordering::Relaxed) || SIGNAL_STOP.load(Ordering::Relaxed) {
+                    break;
+                }
+                let res = eng.poll_watched_observation_dirs();
+                if res.imported > 0 || !res.errors.is_empty() {
+                    println!(
+                        "[onehundod-watch] imported={}, deduplicated={}, errors={:?}",
+                        res.imported, res.deduplicated, res.errors
+                    );
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
     let sync_handle = if engine.config.platform_url.is_some() {
         let eng = Arc::clone(&engine);
         let sd = Arc::clone(&shutdown);
@@ -245,6 +300,9 @@ fn main() {
 
     let _ = ipc_handle.join();
     if let Some(h) = health_handle {
+        let _ = h.join();
+    }
+    if let Some(h) = watch_handle {
         let _ = h.join();
     }
     if let Some(h) = sync_handle {

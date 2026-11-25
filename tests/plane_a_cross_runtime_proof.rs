@@ -193,6 +193,8 @@ fn rcheevos_evaluator_advanced_ops_memaddr_parser_and_excessive_gap_downgrade() 
         semantic_rules: vec![],
         memory_rules: vec![rule],
         memory_stats: vec![],
+        pack_sha256: "0".repeat(64),
+        mapped_oap_edition: None,
         source_path: "in-memory".into(),
     });
 

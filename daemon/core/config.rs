@@ -13,6 +13,17 @@ fn default_plane_a_max_frame_gaps_before_downgrade() -> u64 {
     10
 }
 
+fn default_watch_poll_interval_ms() -> u64 {
+    5_000
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WatchedObservationDir {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub canonical_game_id: Option<String>,
+}
+
 /// Generate a RFC 4122 UUID v4 using OS randomness (`/dev/urandom`) with monotonic fallback.
 pub fn generate_uuid_v4() -> String {
     let mut bytes = [0u8; 16];
@@ -106,6 +117,10 @@ pub struct DaemonConfig {
     pub shm_poll_interval_ms: u64,
     #[serde(default = "default_plane_a_max_frame_gaps_before_downgrade")]
     pub plane_a_max_frame_gaps_before_downgrade: u64,
+    #[serde(default)]
+    pub watched_observation_dirs: Vec<WatchedObservationDir>,
+    #[serde(default = "default_watch_poll_interval_ms")]
+    pub watch_poll_interval_ms: u64,
 }
 
 impl Default for DaemonConfig {
@@ -127,6 +142,8 @@ impl Default for DaemonConfig {
             notifications_enabled: true,
             shm_poll_interval_ms: 2,
             plane_a_max_frame_gaps_before_downgrade: default_plane_a_max_frame_gaps_before_downgrade(),
+            watched_observation_dirs: Vec::new(),
+            watch_poll_interval_ms: default_watch_poll_interval_ms(),
         }
     }
 }

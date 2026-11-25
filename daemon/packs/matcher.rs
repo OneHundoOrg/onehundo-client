@@ -1,4 +1,4 @@
-use super::manifest::{load_pack_from_zip_bytes, LoadedPack, MatcherType};
+use super::manifest::{load_pack_from_zip_bytes, LoadedPack, MatcherType, PackSummary};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -78,6 +78,10 @@ impl PackRegistry {
         let mut list: Vec<&LoadedPack> = self.packs_by_id.values().collect();
         list.sort_by(|a, b| a.manifest.pack_id.cmp(&b.manifest.pack_id));
         list
+    }
+
+    pub fn summaries(&self) -> Vec<PackSummary> {
+        self.list().into_iter().map(LoadedPack::summary).collect()
     }
 
     pub fn load_errors(&self) -> &[(String, String)] {

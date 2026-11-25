@@ -85,6 +85,25 @@ impl SessionManager {
         self.sessions.get_mut(session_id)
     }
 
+    pub fn set_mode(&mut self, session_id: Option<&str>, mode: ProgressionMode) -> Vec<SessionInfo> {
+        let mut updated = Vec::new();
+        if let Some(sid) = session_id {
+            if let Some(s) = self.sessions.get_mut(sid) {
+                s.progression_mode = mode;
+                updated.push(s.clone());
+            }
+        } else {
+            for s in self.sessions.values_mut() {
+                if s.active {
+                    s.progression_mode = mode;
+                    updated.push(s.clone());
+                }
+            }
+            updated.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        }
+        updated
+    }
+
     /// Dual-lane trust invariant:
     /// If a VERIFIED_INTEGRATION or COMPETITIVE session triggers disallowed fair-play actions
     /// (e.g. save-state load, cheat/memory-poke toggle, debug console override),
@@ -119,6 +138,8 @@ impl SessionManager {
     }
 
     pub fn all_sessions(&self) -> Vec<SessionInfo> {
-        self.sessions.values().cloned().collect()
+        let mut out: Vec<SessionInfo> = self.sessions.values().cloned().collect();
+        out.sort_by(|a, b| b.started_at.cmp(&a.started_at).then_with(|| a.session_id.cmp(&b.session_id)));
+        out
     }
 }

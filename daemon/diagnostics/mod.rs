@@ -1,9 +1,17 @@
 pub mod server;
 
+use crate::core::config::WatchedObservationDir;
 use crate::core::session::SessionInfo;
+use crate::core::types::ProgressionMode;
 use crate::ipc::shm_arena::SlotOccupancy;
+use crate::observation::external_importers::ObservationHistoryRow;
+use crate::packs::manifest::PackSummary;
 use crate::ui::notifications::NotificationEvent;
 use serde::{Deserialize, Serialize};
+
+fn default_progression_mode() -> ProgressionMode {
+    ProgressionMode::Standard
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SyncTelemetry {
@@ -53,9 +61,13 @@ pub struct PlaneATelemetry {
 pub struct GameHealthSnapshot {
     pub daemon_version: String,
     pub uptime_seconds: u64,
+    #[serde(default = "default_progression_mode")]
+    pub active_progression_mode: ProgressionMode,
     pub loaded_packs_count: usize,
     pub pack_load_errors_count: usize,
     pub total_journal_events: u64,
+    #[serde(default)]
+    pub plane_b_events_committed: u64,
     pub sync_queue_depth: u64,
     pub synced_events_count: u64,
     pub rejected_events_count: u64,
@@ -66,5 +78,11 @@ pub struct GameHealthSnapshot {
     pub sync: SyncTelemetry,
     pub plane_a: PlaneATelemetry,
     pub sessions: Vec<SessionInfo>,
+    #[serde(default)]
+    pub installed_packs: Vec<PackSummary>,
+    #[serde(default)]
+    pub recent_observations: Vec<ObservationHistoryRow>,
+    #[serde(default)]
+    pub watched_dirs: Vec<WatchedObservationDir>,
     pub recent_notifications: Vec<NotificationEvent>,
 }

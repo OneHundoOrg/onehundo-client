@@ -3,10 +3,19 @@
 //! External observations NEVER route through Plane A or Plane B gameplay evaluators,
 //! and MUST carry provenance (`PLATFORM_CONFIRMED`, `LOCALLY_OBSERVED`, `INFERRED`).
 
+pub mod generic_export;
+pub mod goldberg;
+pub mod trophy_dir;
+pub mod watcher;
+
+pub use crate::core::types::sha256_hex;
+
 use crate::core::types::{
-    is_valid_canonical_id, is_valid_uuid, now_rfc3339, now_unix_secs, EventKind, EvidenceClass,
-    ProgressionMode, TrustTier, VerificationState,
+    deterministic_uuid_from_seed, format_rfc3339_secs, is_valid_canonical_id, is_valid_uuid,
+    now_rfc3339, now_unix_secs, EventKind, EvidenceClass, ProgressionMode, TrustTier,
+    VerificationState,
 };
+use crate::packs::matcher::PackRegistry;
 use crate::storage::journal::{insert_journal_event_tx, JournalEventInput};
 use crate::storage::state::{apply_stat_update_tx, record_trophy_unlock_tx};
 use rusqlite::{params, Connection};
@@ -59,11 +68,131 @@ pub struct ObservationRecord {
     pub provenance_notes: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ImportOptions {
+    pub canonical_game_id: Option<String>,
+    pub override_progression_mode: Option<ProgressionMode>,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedObservationSet {
+    pub records: Vec<ObservationRecord>,
+    pub skipped_locked: usize,
+    pub source_kind: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ObservationImportSummary {
     pub imported: usize,
     pub deduplicated: usize,
+    #[serde(default)]
+    pub skipped_locked: usize,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default)]
+    pub source_kind: String,
     pub observation_ids: Vec<String>,
+    #[serde(default)]
+    pub records: Vec<ObservationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservationHistoryRow {
+    pub observation_id: String,
+    pub canonical_game_id: String,
+    pub observer_id: String,
+    pub source_type: String,
+    pub record_kind: String,
+    pub key: String,
+    pub unlocked: Option<bool>,
+    pub source_timestamp: Option<String>,
+    pub observed_at: String,
+    pub progression_mode: String,
+    pub trust_tier: String,
+    pub evidence_class: String,
+    pub verification_state: String,
+    pub artifact_hash_sha256: Option<String>,
+}
+
+pub(crate) fn resolve_mode(opts: &ImportOptions) -> ProgressionMode {
+    opts.override_progression_mode
+        .unwrap_or(ProgressionMode::Standard)
+}
+
+/// Normalize external achievement/trophy identifiers to valid `[a-z0-9][a-z0-9._-]{1,127}` IDs.
+pub(crate) fn normalize_canonical_id(raw: &str, prefix_if_short: &str) -> String {
+    let mut out = String::with_capacity(raw.len() + 8);
+    let mut prev_sep = false;
+    for ch in raw.trim().chars() {
+        let lower = ch.to_ascii_lowercase();
+        if matches!(lower, 'a'..='z' | '0'..='9') {
+            out.push(lower);
+            prev_sep = false;
+        } else if matches!(lower, '.' | '_' | '-') {
+            if !out.is_empty() && !prev_sep {
+                out.push(lower);
+                prev_sep = true;
+            }
+        } else if !out.is_empty() && !prev_sep {
+            out.push('_');
+            prev_sep = true;
+        }
+    }
+    while out.ends_with(['.', '_', '-']) {
+        out.pop();
+    }
+    if out.is_empty() {
+        out = format!("{}_unknown", prefix_if_short);
+    } else if out.len() < 2 {
+        out = format!("{}_{}", prefix_if_short, out);
+    }
+    if out.len() > 128 {
+        out.truncate(128);
+        while out.ends_with(['.', '_', '-']) && out.len() > 2 {
+            out.pop();
+        }
+    }
+    out
+}
+
+/// Convert JSON timestamp (epoch secs/ms or RFC3339 string) to `Option<String>`.
+/// Missing, `0`, empty, `"null"`, or invalid timestamps return `None` — timestamps are NEVER invented.
+pub(crate) fn parse_optional_timestamp(val: &serde_json::Value) -> Option<String> {
+    match val {
+        serde_json::Value::Null => None,
+        serde_json::Value::Number(n) => {
+            let v = n.as_i64()?;
+            if v <= 0 {
+                return None;
+            }
+            let secs = if v > 10_000_000_000 { v / 1000 } else { v };
+            Some(format_rfc3339_secs(secs))
+        }
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("null") || trimmed == "0" {
+                return None;
+            }
+            if let Ok(v) = trimmed.parse::<i64>() {
+                if v <= 0 {
+                    return None;
+                }
+                let secs = if v > 10_000_000_000 { v / 1000 } else { v };
+                return Some(format_rfc3339_secs(secs));
+            }
+            // Accept RFC 3339 timestamps (basic structural check: YYYY-MM-DDTHH:MM:SS...)
+            if trimmed.len() >= 20
+                && trimmed.as_bytes()[4] == b'-'
+                && trimmed.as_bytes()[7] == b'-'
+                && matches!(trimmed.as_bytes()[10], b'T' | b't' | b' ')
+            {
+                return Some(trimmed.to_string());
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 pub fn validate_observation_record(rec: &ObservationRecord) -> Result<(), String> {
@@ -132,7 +261,7 @@ pub fn parse_observation_json_str(json_str: &str) -> Result<Vec<ObservationRecor
 }
 
 /// Import validated Plane C observation records directly into `observation_journal`
-/// and outbox `event_journal` without ever passing through `evaluation/`.
+/// and outbox `event_journal` without ever passing through gameplay evaluators.
 pub fn import_observation_records(
     conn: &mut Connection,
     records: &[ObservationRecord],
@@ -150,7 +279,7 @@ pub fn import_observation_records(
     let mut deduplicated = 0usize;
     let mut ids = Vec::new();
 
-    for (idx, rec) in records.iter().enumerate() {
+    for rec in records {
         let raw_json = serde_json::to_string(rec).map_err(|e| e.to_string())?;
         let rows = tx
             .execute(
@@ -193,9 +322,22 @@ pub fn import_observation_records(
         imported += 1;
         ids.push(rec.observation_id.clone());
 
-        // Queue OBSERVATION_IMPORT in event_journal outbox with strict provenance
-        let seq = (idx as i64) + 1;
+        // Queue OBSERVATION_IMPORT in event_journal outbox with strict provenance.
+        // For ACHIEVEMENT_EVIDENCE, platform treats int_value != 0 as unlock when matching a pack key.
+        let seq = 1i64;
         let idemp = format!("obs:{}:{}", rec.observation_id, seq);
+        let occurred_at = rec
+            .source_timestamp
+            .as_deref()
+            .unwrap_or(&rec.observed_at)
+            .to_string();
+        let outbox_int = rec.int_value.or_else(|| {
+            if rec.record_kind == "ACHIEVEMENT_EVIDENCE" {
+                rec.unlocked.map(|b| if b { 1 } else { 0 })
+            } else {
+                None
+            }
+        });
         let j_ev = JournalEventInput {
             producer_id: rec.observer_id.clone(),
             session_id: rec.observation_id.clone(),
@@ -204,10 +346,10 @@ pub fn import_observation_records(
             canonical_game_id: rec.canonical_game_id.clone(),
             event_kind: EventKind::ObservationImport,
             key: rec.key.clone(),
-            int_value: rec.int_value,
+            int_value: outbox_int,
             float_value: rec.float_value,
             string_value: rec.string_value.clone(),
-            occurred_at: rec.observed_at.clone(),
+            occurred_at: occurred_at.clone(),
             progression_mode: rec.progression_mode,
             trust_tier: rec.trust_tier,
             evidence_class: rec.evidence_class,
@@ -224,7 +366,7 @@ pub fn import_observation_records(
                     &rec.canonical_game_id,
                     &rec.key,
                     &rec.observation_id,
-                    &rec.observed_at,
+                    &occurred_at,
                     rec.progression_mode,
                     rec.trust_tier,
                     rec.evidence_class,
@@ -251,99 +393,176 @@ pub fn import_observation_records(
     Ok(ObservationImportSummary {
         imported,
         deduplicated,
+        skipped_locked: 0,
+        dry_run: false,
+        source_kind: "observation_records".to_string(),
         observation_ids: ids,
+        records: Vec::new(),
     })
+}
+
+pub fn parse_observation_path_with_options(
+    path: &Path,
+    packs: Option<&PackRegistry>,
+    opts: &ImportOptions,
+) -> Result<ParsedObservationSet, String> {
+    if !path.exists() {
+        return Err(format!("observation path '{}' does not exist", path.display()));
+    }
+
+    if path.is_dir() {
+        let has_trophy = [
+            "TROPUSR.DAT",
+            "TROP.XML",
+            "TROPUSR.XML",
+            "TROP.SFM",
+            "TROPCONF.SFM",
+            "trophies.xml",
+            "TROPUSR.json",
+            "trophies.json",
+            "trophy.json",
+        ]
+        .iter()
+        .any(|f| path.join(f).is_file());
+        if has_trophy {
+            return trophy_dir::parse_trophy_directory(path, packs, opts);
+        }
+
+        if path.join("achievements.json").is_file() || path.join("achievements.ini").is_file() {
+            return goldberg::parse_goldberg_path(path, opts);
+        }
+
+        // Fall back to first `*.oh-obs.json` inside directory if present
+        if let Ok(rd) = fs::read_dir(path) {
+            let mut obs_files: Vec<_> = rd
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_file()
+                        && p.file_name()
+                            .and_then(|s| s.to_str())
+                            .map(|n| n.ends_with(".oh-obs.json"))
+                            .unwrap_or(false)
+                })
+                .collect();
+            obs_files.sort();
+            if !obs_files.is_empty() {
+                let mut combined = Vec::new();
+                for f in obs_files {
+                    let parsed = generic_export::parse_generic_or_protocol_file(&f, opts)?;
+                    combined.extend(parsed.records);
+                }
+                return Ok(ParsedObservationSet {
+                    records: combined,
+                    skipped_locked: 0,
+                    source_kind: "observation_directory".to_string(),
+                });
+            }
+        }
+
+        return Err(format!(
+            "no recognized Goldberg/GSE, trophy directory, or .oh-obs.json files found in '{}'",
+            path.display()
+        ));
+    }
+
+    let fname = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    match fname.as_str() {
+        "achievements.json" | "achievements.ini" => goldberg::parse_goldberg_path(path, opts),
+        "tropusr.dat" | "trop.xml" | "tropusr.xml" | "trop.sfm" | "tropconf.sfm"
+        | "trophies.xml" | "tropusr.json" | "trophies.json" | "trophy.json" => {
+            trophy_dir::parse_trophy_file(path, packs, opts)
+        }
+        _ => generic_export::parse_generic_or_protocol_file(path, opts),
+    }
+}
+
+pub fn import_observation_path_with_options(
+    conn: &mut Connection,
+    path: &Path,
+    packs: Option<&PackRegistry>,
+    opts: &ImportOptions,
+) -> Result<ObservationImportSummary, String> {
+    let parsed = parse_observation_path_with_options(path, packs, opts)?;
+    if opts.dry_run {
+        let ids = parsed
+            .records
+            .iter()
+            .map(|r| r.observation_id.clone())
+            .collect();
+        return Ok(ObservationImportSummary {
+            imported: 0,
+            deduplicated: 0,
+            skipped_locked: parsed.skipped_locked,
+            dry_run: true,
+            source_kind: parsed.source_kind,
+            observation_ids: ids,
+            records: parsed.records,
+        });
+    }
+
+    let mut summary = import_observation_records(conn, &parsed.records)?;
+    summary.skipped_locked = parsed.skipped_locked;
+    summary.source_kind = parsed.source_kind;
+    summary.records = parsed.records;
+    Ok(summary)
 }
 
 pub fn import_observation_file(
     conn: &mut Connection,
     path: &Path,
 ) -> Result<ObservationImportSummary, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|e| format!("failed reading observation file '{}': {}", path.display(), e))?;
-    let records = parse_observation_json_str(&raw)?;
-    import_observation_records(conn, &records)
+    import_observation_path_with_options(conn, path, None, &ImportOptions::default())
 }
 
-/// Pure-Rust SHA-256 helper for save-file artifact hashing in Plane C importers.
-pub fn sha256_hex(data: &[u8]) -> String {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-    ];
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-    ];
-    let bit_len = (data.len() as u64) * 8;
-    let mut msg = data.to_vec();
-    msg.push(0x80);
-    while (msg.len() % 64) != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
+pub fn list_observation_history(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<ObservationHistoryRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT observation_id, canonical_game_id, observer_id, source_type,
+                    record_kind, key, unlocked, source_timestamp, observed_at,
+                    progression_mode, trust_tier, evidence_class, verification_state,
+                    artifact_hash_sha256
+             FROM observation_journal
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| format!("failed preparing observation_journal query: {}", e))?;
 
-    for chunk in msg.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let temp1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = s0.wrapping_add(maj);
+    let rows = stmt
+        .query_map(params![limit.max(1) as i64], |r| {
+            let unlocked_int: Option<i64> = r.get(6)?;
+            Ok(ObservationHistoryRow {
+                observation_id: r.get(0)?,
+                canonical_game_id: r.get(1)?,
+                observer_id: r.get(2)?,
+                source_type: r.get(3)?,
+                record_kind: r.get(4)?,
+                key: r.get(5)?,
+                unlocked: unlocked_int.map(|v| v != 0),
+                source_timestamp: r.get(7)?,
+                observed_at: r.get(8)?,
+                progression_mode: r.get(9)?,
+                trust_tier: r.get(10)?,
+                evidence_class: r.get(11)?,
+                verification_state: r.get(12)?,
+                artifact_hash_sha256: r.get(13)?,
+            })
+        })
+        .map_err(|e| format!("failed querying observation_journal: {}", e))?;
 
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| format!("observation_journal decode error: {}", e))?);
     }
-
-    let mut out = String::with_capacity(64);
-    for word in h {
-        out.push_str(&format!("{:08x}", word));
-    }
-    out
+    Ok(out)
 }
 
 /// Passive save-file JSON importer helper for Plane C (`LOCALLY_OBSERVED`, `LOCAL`, `UNVERIFIED`).
@@ -356,19 +575,25 @@ pub fn build_save_file_observation(
 ) -> Result<ObservationRecord, String> {
     let bytes = fs::read(save_path)
         .map_err(|e| format!("failed to read save file '{}': {}", save_path.display(), e))?;
+    let artifact_hash = sha256_hex(&bytes);
+    let key = normalize_canonical_id(achievement_key, "ach");
+    let seed = format!(
+        "save_file:{}:{}:{}:{}",
+        canonical_game_id, observer_id, key, artifact_hash
+    );
     Ok(ObservationRecord {
         schema_version: "0.1.0".to_string(),
-        observation_id: crate::core::config::generate_uuid_v4(),
+        observation_id: deterministic_uuid_from_seed(&seed),
         canonical_game_id: canonical_game_id.to_string(),
         observer_id: observer_id.to_string(),
         source_type: "save_file".to_string(),
         observed_at: now_rfc3339(),
         source_timestamp: None,
-        artifact_hash_sha256: Some(sha256_hex(&bytes)),
+        artifact_hash_sha256: Some(artifact_hash),
         record_kind: "ACHIEVEMENT_EVIDENCE".to_string(),
-        key: achievement_key.to_string(),
+        key,
         unlocked: Some(unlocked),
-        int_value: None,
+        int_value: Some(if unlocked { 1 } else { 0 }),
         float_value: None,
         string_value: None,
         progression_mode: ProgressionMode::Standard,

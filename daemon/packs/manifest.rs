@@ -1,4 +1,4 @@
-use crate::core::types::{is_valid_canonical_id, ProgressionMode, TrustTier};
+use crate::core::types::{is_valid_canonical_id, sha256_hex, ProgressionMode, TrustTier};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -275,13 +275,96 @@ pub struct RulesDocument {
     pub memory_stats: Vec<MemoryStatRule>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackSummary {
+    pub pack_id: String,
+    pub pack_version: Option<String>,
+    pub canonical_game_id: String,
+    pub title: String,
+    pub mapped_oap_edition: Option<String>,
+    pub achievement_count: usize,
+    pub pack_sha256: String,
+    pub enabled_planes: Vec<String>,
+    pub signed: bool,
+    pub source_path: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoadedPack {
     pub manifest: PackManifest,
     pub semantic_rules: Vec<SemanticRule>,
     pub memory_rules: Vec<MemoryRule>,
     pub memory_stats: Vec<MemoryStatRule>,
+    pub pack_sha256: String,
+    pub mapped_oap_edition: Option<String>,
     pub source_path: String,
+}
+
+impl LoadedPack {
+    pub fn summary(&self) -> PackSummary {
+        let mut enabled_planes = Vec::new();
+        if self
+            .manifest
+            .profiles
+            .memory
+            .as_ref()
+            .map(|m| m.enabled)
+            .unwrap_or(false)
+        {
+            enabled_planes.push("Plane A (Memory)".to_string());
+        }
+        if self
+            .manifest
+            .profiles
+            .semantic
+            .as_ref()
+            .map(|s| s.enabled)
+            .unwrap_or(false)
+        {
+            enabled_planes.push("Plane B (Semantic)".to_string());
+        }
+        if self
+            .manifest
+            .profiles
+            .observation
+            .as_ref()
+            .map(|o| o.enabled)
+            .unwrap_or(false)
+        {
+            enabled_planes.push("Plane C (Observation)".to_string());
+        }
+        PackSummary {
+            pack_id: self.manifest.pack_id.clone(),
+            pack_version: self.manifest.pack_version.clone(),
+            canonical_game_id: self.manifest.canonical_game_id.clone(),
+            title: self.manifest.title.clone(),
+            mapped_oap_edition: self.mapped_oap_edition.clone(),
+            achievement_count: self.manifest.achievements.len(),
+            pack_sha256: self.pack_sha256.clone(),
+            enabled_planes,
+            signed: self.manifest.signature.is_some(),
+            source_path: self.source_path.clone(),
+        }
+    }
+}
+
+pub fn derive_mapped_oap_edition(manifest: &PackManifest) -> Option<String> {
+    if manifest.canonical_game_id == "sony.bloodborne"
+        || manifest
+            .matchers
+            .iter()
+            .any(|m| m.matcher_type == MatcherType::PlatformId && m.value.eq_ignore_ascii_case("CUSA03173"))
+    {
+        return Some("psn-provisional-bloodborne-ps4".to_string());
+    }
+    if manifest.canonical_game_id == "shared.cross_runtime.chronos" {
+        return Some("ra-chronos".to_string());
+    }
+    manifest
+        .matchers
+        .iter()
+        .find(|m| m.matcher_type == MatcherType::PlatformId)
+        .map(|m| format!("platform_id:{}", m.value))
 }
 
 pub fn validate_and_parse_manifest(
@@ -386,8 +469,7 @@ pub fn validate_and_parse_manifest(
 }
 
 pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<LoadedPack, String> {
-    let entries = super::zip_safe::read_and_validate_zip(bytes)?
-        ;
+    let entries = super::zip_safe::read_and_validate_zip(bytes)?;
     let manifest_bytes = entries
         .get("manifest.json")
         .ok_or_else(|| "pack archive missing required root 'manifest.json'".to_string())?;
@@ -423,11 +505,16 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
         }
     }
 
+    let mapped_oap_edition = derive_mapped_oap_edition(&manifest);
+    let pack_sha256 = sha256_hex(bytes);
+
     Ok(LoadedPack {
         manifest,
         semantic_rules,
         memory_rules,
         memory_stats,
+        pack_sha256,
+        mapped_oap_edition,
         source_path: source_path.to_string(),
     })
 }

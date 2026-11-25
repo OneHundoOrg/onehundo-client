@@ -4,11 +4,11 @@
 > **Organization:** `OneHundoOrg` (`onehundo.org`)  
 > **Upstream Contracts:** [`onehundo-protocol`](https://github.com/OneHundoOrg/onehundo-protocol) (`v0.1.0`, Public, dual `MIT OR Apache-2.0`)  
 > **Cloud Target:** [`onehundo-platform`](https://github.com/OneHundoOrg/onehundo-platform) (Private, Proprietary; Zerops staging at `https://app-3bb4-3000.prg1.zerops.app`)  
-> **Current Phase:** Phase 2 Complete — Ready for **Phase 3 (Plane C External Observation & Desktop Experience)**
+> **Current Phase:** Phase 3 Complete — Ready for **Phase 4 (Community Authoring, Launch Integrations, Rarity & Competitive Lane)**
 
 ---
 
-## 1. Completed Baseline (Phase 1 · Phase 1.5 · Phase 2)
+## 1. Completed Baseline (Phase 1 · Phase 1.5 · Phase 2 · Phase 3)
 
 ### [x] Phase 1 — Plane B End-to-End Runtime & Cloud Sync
 - `onehundod` (`src/main.rs`, `daemon/core/engine.rs`): Unix socket IPC server, Commit-Before-Ack SQLite WAL journal (`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;`), `event_journal` deduplication on `(producer_id, session_id, sequence_number)`, and materialized `trophy_state` / `stat_state`.
@@ -27,18 +27,22 @@
 - **`rcheevos`-Compatible Evaluator (`daemon/evaluation/memory-arena/mod.rs`, `daemon/packs/manifest.rs`):** Full RetroAchievements `memaddr` parser and evaluator (`Mem`, `Delta`, `Prior`, `Once`, `ResetIf`, `PauseIf`, `AddSource`, `SubSource`, `AddHits`, `SubHits`, `AndNext`, `OrNext`, `ResetNextIf`, `Measured`, `i8`/`i16`/`i32`/`u24`/`u32_be`/nibbles/`bitcount`/`bit0..7`, memory-vs-memory RHS) plus `memory_stats` (`STAT_SET` / `STAT_INC`), transactional SQLite WAL (`synchronous = FULL`) commits with `RUNTIME_OBSERVED` provenance, `SPECTATOR` non-mutation, and `VERIFIED_INTEGRATION` -> `LOCAL` downgrade on `SaveStateLoad`, cheats, and `FairPlayViolation::ExcessiveFrameGap` (`plane_a_max_frame_gaps_before_downgrade`, default `10`).
 - **Dual-Runtime Portability Proof (`packs/onehundo.plane_a.cross_runtime.onehundo`, `integrations/emulators/plane_a_emulator_harness.c`, `integrations/static-recompilations/plane_a_recomp_harness.c`, `tests/plane_a_cross_runtime_proof.rs`):** Single `onehundo-validate`-verified `.onehundo` pack produces identical `RUNTIME_OBSERVED` unlocks and stats across both emulator (`rom_hash`) and static recompilation (`recomp_game_id` / `build_id`) harnesses, verified with ring-contention `FRAME_GAP` reporting, `SPECTATOR` non-mutation, `SAVE_STATE_LOAD` trust downgrade, and end-to-end `/v1/sync/events` cloud sync validation.
 
+### [x] Phase 3 — Plane C External Observation & Desktop Experience
+- **Isolated External Importers & Directory Watchers (`daemon/observation/external-importers/{mod,goldberg,trophy_dir,generic_export,watcher}.rs`):** Strictly isolated from `daemon/evaluation/` (`tests/plane_c_isolation.rs`), supporting Goldberg/GSE (`achievements.json`, `achievements.ini`), emulator trophy directories (`RPCS3` `TROPUSR.DAT` + `TROP.SFM`, `shadPS4` `TROP.XML` / `trophies.json`), and generic `ObservationRecord` / save-export JSON; preserves missing/`0` unlock timestamps as SQL `NULL` (never invented), deduplicates idempotently in SQLite WAL (`synchronous = FULL`), tags records `LOCALLY_OBSERVED` / `LOCAL` / `UNVERIFIED`, enforces `SPECTATOR` non-mutation, and supports background watched directories (`--watch-dir`, `--watch-interval-ms`).
+- **Game Health Control Center & Pack Management (`daemon/diagnostics/{mod,server}.rs`, `ui/game-health/mod.rs`, `ui/pack-browser/mod.rs`, `apps/desktop/main.rs`):** Upgraded `http://127.0.0.1:19850` (`GET /`, `GET /ui/packs`, `GET /health`, `GET /packs`, `POST /sync-now`, `POST /session/mode`, `POST /v1/observation/import`) using `onehundo-platform/DESIGN.md` dark Swiss/Grid tokens and WCAG 2.2 AAA semantics (zero secrets exposed), surfacing active mode/trust/downgrade reasons, `shm_frame_gaps_reported` / `ipc_frame_gaps_reported`, installed `.onehundo` packs with SHA-256 + mapped OAP edition, Plane C import history (`null (not invented)` badges), and interactive `onehundo-desktop` commands (`packs`, `mode`, `import-obs --game-id --mode --dry-run --url`).
+
 ---
 
-## 2. Phase 3 Scope & File Ownership (Next)
+## 2. Phase 4 Scope & File Ownership (Next)
 
-**Objective:** Import existing local achievement records cleanly (Plane C) and provide a richer local control center in Game Health & `onehundo-desktop`.
+**Objective:** Enable low-friction community `.onehundo` pack authoring, ship launch integrations (RetroArch, LaunchBox, Playnite, flagship recompilations), and add Ed25519 signature verification + `COMPETITIVE` trust-lane enforcement.
 
 ### Target Modules
-- **External Importers (`daemon/observation/external-importers/`):** Modular importers (strictly isolated from `daemon/evaluation/`) for Goldberg/GSE JSON/INI, emulator trophy directories (`shadPS4` / `RPCS3`), and local save/log exports, plus directory watchers and `onehundo-desktop import-obs <file>` tagging records `LOCALLY_OBSERVED` / `LOCAL`.
-- **Game Health & Pack Management UI (`daemon/diagnostics/server.rs`, `ui/game-health/mod.rs`, `ui/pack-browser/`, `apps/desktop/main.rs`):** Interactive session mode/trust/downgrade visibility, Plane A `FRAME_GAP` drilldowns, installed `.onehundo` pack browser, sync queue inspection, and manual `Sync Now` / mode controls.
+- **Pack Security & Verification (`daemon/packs/`):** Ed25519 signature verification (`signature_key_id` + `pack_sha256`), remote `GET /v1/packs/resolve` auto-download/cache, and `COMPETITIVE` reproducible-build/frame-gap checks.
+- **Creator & Frontend Integrations (`integrations/`, `daemon/diagnostics/server.rs`, `apps/desktop/main.rs`):** Save-diff & named-state authoring helpers, libretro/RetroArch Plane A bridge, and LaunchBox / Playnite read-only shelf polling against `127.0.0.1:19850`.
 
 ### Hard Boundaries
-- Never fork `onehundo-protocol` headers or schemas locally; consume `v0.1.0` contracts from `onehundo-protocol`.
+- Never fork `onehundo-protocol` headers or schemas locally; consume `v0.1.0+` contracts from `onehundo-protocol`.
 - Keep `daemon/observation/external-importers/` strictly isolated from `daemon/evaluation/` (`tests/plane_c_isolation.rs`).
 - Never block game threads on IPC/HTTP I/O; never commit copyrighted ROMs, BIOSes, or game assets.
 
@@ -47,11 +51,11 @@
 ## 3. Verification Commands
 
 ```bash
-# Full Rust test suite (offline)
-cargo test --offline
+# Build updated binaries (including onehundo-desktop) and run full Rust test suite (offline)
+cargo build --offline --bins && cargo test --offline
 
 # Compile / lint check (all targets)
-cargo check --all-targets
+cargo check --offline --all-targets
 
 # Strict ISO C99 compile checks for reference/integration examples
 gcc -std=c99 -pedantic -Wall -Wextra -Werror -I../onehundo-protocol/include \

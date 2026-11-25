@@ -3,7 +3,7 @@
 > **Repository:** [`onehundo-client`](https://github.com/OneHundoOrg/onehundo-client) (Public, dual `MIT OR Apache-2.0`)  
 > **Organization:** `OneHundoOrg` (`onehundo.org`)  
 > **Role:** Local background daemon (`onehundod`), SQLite append-only journal & materialized state, Plane A (`rcheevos`) & Plane B (semantic) evaluators, Plane C external importers, baseline desktop notifications, `onehundo-desktop` CLI & `Game Health` diagnostics, and cloud sync worker (`onehundo-platform` `/v1/*` client).  
-> **Current Phase:** Phase 2 (**Plane A Shared-Memory Cross-Runtime Proof**) verified; ready for **Phase 3 — Plane C External Observation & Desktop Experience**.  
+> **Current Phase:** Phase 3 (**Plane C External Observation & Desktop Experience**) verified; ready for **Phase 4 — Community Authoring, Launch Integrations, Rarity & Competitive Lane**.  
 > **Target Audience:** Autonomous AI agents and human contributors working on the OneHundo local runtime, evaluators, and integrations.
 
 ---
@@ -61,28 +61,28 @@
 
 ## 3. Directory Layout Guidelines
 
-- `apps/desktop/`: `onehundo-desktop` CLI entrypoint (`start`, `stop`, `status`, `health`, `packs`, `import-obs`, `set-api-key`, `sync-now`).
+- `apps/desktop/`: `onehundo-desktop` CLI entrypoint (`start`, `stop`, `status`, `health`, `packs`, `mode`, `import-obs`, `set-api-key`, `sync-now`).
 - `deploy/systemd/`: Checked-in `onehundod.service` `systemd --user` unit.
-- `daemon/core/`: Core daemon state machine, configuration (`~/.config/onehundo/`), `flock` single-instance lockfile (`lockfile.rs`), and session orchestration.
+- `daemon/core/`: Core daemon state machine, configuration (`~/.config/onehundo/`, watched observation dirs), `flock` single-instance lockfile (`lockfile.rs`), and session orchestration.
 - `daemon/ipc/`: Cross-platform IPC listeners (Unix domain sockets on Linux/macOS, named pipes on Windows) and SHM arena readers (`shm_arena.rs`).
-- `daemon/storage/journal/` & `daemon/storage/state/`: SQLite WAL append-only `event_journal`, sync outbox tracking, and materialized `trophy_state` / `stat_state`.
-- `daemon/packs/`: `.onehundo` (provisional) pack discovery, archive/schema validation (enforcing zip-slip/symlink/size safety), and deterministic matcher precedence.
+- `daemon/storage/journal/` & `daemon/storage/state/`: SQLite WAL append-only `event_journal` / `observation_journal`, sync outbox tracking, and materialized `trophy_state` / `stat_state`.
+- `daemon/packs/`: `.onehundo` (provisional) pack discovery, archive/schema validation (enforcing zip-slip/symlink/size safety), SHA-256 + OAP edition summaries, and deterministic matcher precedence.
 - `daemon/evaluation/memory-arena/`: Plane A memory-arena / `rcheevos` evaluator, save-state progress serialization, reset hooks, and `FRAME_GAP` tracking.
 - `daemon/evaluation/semantic-events/`: Plane B stat accumulators, thresholds, and direct unlock evaluation.
-- `daemon/observation/external-importers/`: Plane C passive save/file/platform observers (strictly isolated from `evaluation/`).
+- `daemon/observation/external-importers/`: Plane C passive Goldberg/GSE, RPCS3/shadPS4 trophy dir, and `ObservationRecord`/save-export importers + directory watcher (strictly isolated from `evaluation/`).
 - `daemon/sync/`: Background HTTP batch sync client targeting `onehundo-platform` (`/v1/devices/register`, `/v1/packs/resolve`, `/v1/sync/events`).
-- `daemon/diagnostics/`: `Game Health` status API (`http://127.0.0.1:19850/health`, `/packs`, `/sync-now`, `/shutdown`).
+- `daemon/diagnostics/`: `Game Health` control center & status API (`http://127.0.0.1:19850/`, `/ui/packs`, `/health`, `/packs`, `/sync-now`, `/session/mode`, `/v1/observation/import`, `/shutdown`).
 - `integrations/`: Opt-in integration adapters (`emulators/` including `plane_a_emulator_harness.c`, `static-recompilations/`, `native-ports/` including `bbport_live_demo.c` and `onehundo_quick.h`, `pc-games/`, and Windows `launchbox/`).
 - `packs/`: Local validated packs (including `sony.bloodborne.bbport.onehundo`, SHA-256 `6f35c670...`).
-- `ui/`: Baseline `notifications/` (OS toast notifications), `game-health/`, `pack-browser/`, and optional future `overlays/`.
-- `tests/`: Unit, crash-recovery (`SIGKILL` commit-before-ack), replay-idempotency, mode-isolation (`STANDARD`/`ENCORE`/`SPECTATOR`), daemon lock/auto-sync, Plane A evaluator/gaps, Plane C isolation, and end-to-end C SDK + platform tests.
+- `ui/`: Baseline `notifications/` (OS toast notifications), `game-health/` (control center HTML), `pack-browser/` (installed `.onehundo` pack browser HTML), and optional future `overlays/`.
+- `tests/`: Unit, crash-recovery (`SIGKILL` commit-before-ack), replay-idempotency, mode-isolation (`STANDARD`/`ENCORE`/`SPECTATOR`), daemon lock/auto-sync, Plane A evaluator/gaps, Plane C isolation & importers/watcher/UI, and end-to-end C SDK + platform tests.
 
 ---
 
-## 4. Phase 2 Entry State & Verification Commands
+## 4. Phase 3 Entry State & Verification Commands
 
-- **Phase 2 Verified -> Phase 3 Next:** Live Plane A SHM ring consumption (`daemon/ipc/shm_arena.rs`), `rcheevos`-compatible evaluator + `memory_stats` (`daemon/evaluation/memory-arena/`), `/health` `FRAME_GAP` telemetry, and single-pack (`packs/onehundo.plane_a.cross_runtime.onehundo`) dual-runtime proof (`plane_a_emulator_harness.c` + `plane_a_recomp_harness.c`) are verified; next focus is Phase 3 (`daemon/observation/external-importers/` and Game Health / Pack Browser UI controls).
+- **Phase 3 Verified -> Phase 4 Next:** Plane C external importers (`goldberg.rs`, `trophy_dir.rs`, `generic_export.rs`, `watcher.rs` strictly isolated from `evaluation/`), SQL `NULL` timestamp preservation, `SPECTATOR` non-mutation, `POST /v1/observation/import`, `POST /session/mode`, `POST /sync-now`, upgraded dark Swiss/Grid Game Health & Pack Browser UI (`http://127.0.0.1:19850`), and `onehundo-desktop` (`packs`, `mode`, `import-obs`) are verified (`tests/plane_c_isolation.rs`); next focus is Phase 4 (community `.onehundo` authoring helpers, flagship recomp & RetroArch/LaunchBox/Playnite integrations, and Ed25519 pack signature verification).
 - **Verify:**
-  - `cargo test --offline` (or `cargo test`)
-  - `cargo clippy --all-targets`
-  - Compile C99 integration examples (`bbport_live_demo.c`, `plane_a_emulator_harness.c`, `onehundo_quick.h`) cleanly under `-std=c99 -pedantic -Wall -Wextra -Werror`.
+  - `cargo build --offline --bins && cargo test --offline` (or `cargo test`)
+  - `cargo check --offline --all-targets`
+  - Compile C99 integration examples (`bbport_live_demo.c`, `plane_a_emulator_harness.c`, `plane_a_recomp_harness.c`, `onehundo_quick.h`) cleanly under `-std=c99 -pedantic -Wall -Wextra -Werror`.

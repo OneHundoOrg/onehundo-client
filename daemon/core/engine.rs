@@ -13,8 +13,10 @@ use crate::evaluation::semantic_events::{
     evaluate_and_commit_plane_b, SemanticCommitOutcome, SemanticEventPayload,
 };
 use crate::ipc::shm_arena::ShmRingStats;
+use crate::observation::external_importers::watcher::{DirectoryWatcherState, WatchPollSummary};
 use crate::observation::external_importers::{
-    import_observation_records, parse_observation_json_str, ObservationImportSummary,
+    import_observation_path_with_options, import_observation_records, list_observation_history,
+    parse_observation_json_str, ImportOptions, ObservationImportSummary,
 };
 use crate::packs::matcher::{MatchQuery, PackMatchResult, PackRegistry};
 use crate::storage::journal::{open_and_init_db, query_journal_stats, record_frame_gap_db};
@@ -24,6 +26,7 @@ use crate::ui::notifications::NotificationManager;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -33,9 +36,12 @@ pub struct DaemonEngine {
     pub db: Mutex<Connection>,
     pub packs: Mutex<PackRegistry>,
     pub sessions: Mutex<SessionManager>,
+    pub active_progression_mode: Mutex<ProgressionMode>,
     pub plane_a_evaluators: Mutex<HashMap<String, MemoryArenaEvaluatorState>>,
     pub plane_a_regions: Mutex<HashMap<String, HashMap<u32, usize>>>,
     pub plane_a_rings: Mutex<HashMap<String, PlaneARingTelemetry>>,
+    pub plane_b_events_committed: AtomicU64,
+    pub watcher_state: Mutex<DirectoryWatcherState>,
     pub notifications: NotificationManager,
     pub sync_telemetry: Mutex<SyncTelemetry>,
     pub started_at: Instant,
@@ -44,7 +50,7 @@ pub struct DaemonEngine {
 impl DaemonEngine {
     pub fn initialize(mut config: DaemonConfig) -> Result<Arc<Self>, String> {
         let loaded_cfg = load_or_init_config(&config.config_dir).unwrap_or_else(|_| config.clone());
-        // Preserve CLI overrides on config while inheriting persisted device_uuid and platform_url
+        // Preserve CLI overrides on config while inheriting persisted device_uuid, platform_url, and watched dirs
         if config.device_uuid.is_empty() {
             config.device_uuid = if loaded_cfg.device_uuid.is_empty() {
                 generate_uuid_v4()
@@ -54,6 +60,11 @@ impl DaemonEngine {
         }
         if config.platform_url.is_none() {
             config.platform_url = loaded_cfg.platform_url;
+        }
+        for w in loaded_cfg.watched_observation_dirs {
+            if !config.watched_observation_dirs.iter().any(|x| x.path == w.path) {
+                config.watched_observation_dirs.push(w);
+            }
         }
 
         let creds = load_credentials(&config.config_dir);
@@ -79,9 +90,12 @@ impl DaemonEngine {
             db: Mutex::new(conn),
             packs: Mutex::new(packs),
             sessions: Mutex::new(SessionManager::new()),
+            active_progression_mode: Mutex::new(ProgressionMode::Standard),
             plane_a_evaluators: Mutex::new(HashMap::new()),
             plane_a_regions: Mutex::new(HashMap::new()),
             plane_a_rings: Mutex::new(HashMap::new()),
+            plane_b_events_committed: AtomicU64::new(0),
+            watcher_state: Mutex::new(DirectoryWatcherState::new()),
             sync_telemetry: Mutex::new(sync_tel),
             started_at: Instant::now(),
         }))
@@ -90,6 +104,21 @@ impl DaemonEngine {
     pub fn load_pack_path(&self, path: &Path) -> Result<String, String> {
         let mut packs = self.packs.lock().map_err(|_| "packs lock poisoned".to_string())?;
         packs.load_pack_file(path)
+    }
+
+    pub fn current_progression_mode(&self) -> ProgressionMode {
+        *self.active_progression_mode.lock().unwrap()
+    }
+
+    pub fn set_progression_mode(
+        &self,
+        session_id: Option<&str>,
+        mode: ProgressionMode,
+    ) -> Vec<SessionInfo> {
+        if session_id.is_none() {
+            *self.active_progression_mode.lock().unwrap() = mode;
+        }
+        self.sessions.lock().unwrap().set_mode(session_id, mode)
     }
 
     pub fn start_session(
@@ -171,6 +200,7 @@ impl DaemonEngine {
         raw_payload: &str,
     ) -> Result<SemanticCommitOutcome, String> {
         let sid = session_id_override.unwrap_or(&ev.session_id);
+        let fallback_mode = self.current_progression_mode();
 
         let (pack_id, mode, trust) = {
             let mut sessions = self.sessions.lock().unwrap();
@@ -194,7 +224,7 @@ impl DaemonEngine {
                     .progression_mode
                     .as_deref()
                     .and_then(ProgressionMode::from_str_strict)
-                    .unwrap_or(ProgressionMode::Standard);
+                    .unwrap_or(fallback_mode);
                 let trust = ev
                     .trust_tier
                     .as_deref()
@@ -238,6 +268,9 @@ impl DaemonEngine {
                 raw_payload,
             )?
         };
+        if !outcome.deduplicated {
+            self.plane_b_events_committed.fetch_add(1, Ordering::Relaxed);
+        }
 
         for unlocked in &outcome.newly_unlocked {
             self.notifications.notify_unlock(
@@ -526,9 +559,89 @@ impl DaemonEngine {
     }
 
     pub fn import_plane_c_json(&self, json_str: &str) -> Result<ObservationImportSummary, String> {
-        let records = parse_observation_json_str(json_str)?;
+        let mut records = parse_observation_json_str(json_str)?;
+        let active_mode = self.current_progression_mode();
+        if active_mode != ProgressionMode::Standard {
+            for r in &mut records {
+                r.progression_mode = active_mode;
+            }
+        }
         let mut db = self.db.lock().unwrap();
         import_observation_records(&mut db, &records)
+    }
+
+    pub fn import_plane_c_path(
+        &self,
+        path: &Path,
+        canonical_game_id: Option<String>,
+        mode_override: Option<ProgressionMode>,
+        dry_run: bool,
+    ) -> Result<ObservationImportSummary, String> {
+        let active_mode = self.current_progression_mode();
+        let effective_mode = mode_override.or(if active_mode != ProgressionMode::Standard {
+            Some(active_mode)
+        } else {
+            None
+        });
+        let opts = ImportOptions {
+            canonical_game_id,
+            override_progression_mode: effective_mode,
+            dry_run,
+        };
+        let packs_guard = self.packs.lock().unwrap();
+        let summary = {
+            let mut db = self.db.lock().unwrap();
+            import_observation_path_with_options(&mut db, path, Some(&packs_guard), &opts)?
+        };
+        drop(packs_guard);
+
+        if !summary.dry_run && summary.imported > 0 {
+            let imported_ids: std::collections::HashSet<&str> =
+                summary.observation_ids.iter().map(String::as_str).collect();
+            for rec in &summary.records {
+                if imported_ids.contains(rec.observation_id.as_str())
+                    && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
+                    && rec.unlocked == Some(true)
+                {
+                    self.notifications.notify_unlock(
+                        &rec.canonical_game_id,
+                        &rec.key,
+                        rec.provenance_notes
+                            .as_deref()
+                            .unwrap_or("Imported via Plane C external observer"),
+                        0,
+                        rec.progression_mode,
+                        rec.trust_tier,
+                        rec.verification_state,
+                    );
+                }
+            }
+        }
+        Ok(summary)
+    }
+
+    pub fn poll_watched_observation_dirs(&self) -> WatchPollSummary {
+        let (scanned, changed) = {
+            let mut watcher = self.watcher_state.lock().unwrap();
+            watcher.collect_changed_targets(&self.config.watched_observation_dirs)
+        };
+        let mut out = WatchPollSummary {
+            files_scanned: scanned,
+            files_changed: changed.len(),
+            ..Default::default()
+        };
+        for (file_path, game_id) in changed {
+            match self.import_plane_c_path(&file_path, game_id, None, false) {
+                Ok(summary) => {
+                    out.imported += summary.imported;
+                    out.deduplicated += summary.deduplicated;
+                }
+                Err(err) => {
+                    out.errors.push(format!("{}: {}", file_path.display(), err));
+                }
+            }
+        }
+        out
     }
 
     pub fn pending_sync_count(&self) -> Result<u64, String> {
@@ -655,15 +768,19 @@ impl DaemonEngine {
     }
 
     pub fn health_snapshot(&self) -> Result<GameHealthSnapshot, String> {
-        let stats = {
+        let (stats, recent_observations) = {
             let db = self.db.lock().unwrap();
-            query_journal_stats(&db)?
+            (
+                query_journal_stats(&db)?,
+                list_observation_history(&db, 20)?,
+            )
         };
-        let (loaded_packs_count, pack_load_errors_count) = {
+        let (loaded_packs_count, pack_load_errors_count, installed_packs) = {
             let packs = self.packs.lock().unwrap();
-            (packs.list().len(), packs.load_errors().len())
+            (packs.list().len(), packs.load_errors().len(), packs.summaries())
         };
         let sessions = self.sessions.lock().unwrap().all_sessions();
+        let active_progression_mode = self.current_progression_mode();
         let sync = self.sync_telemetry.lock().unwrap().clone();
         let recent_notifications = self.notifications.recent();
 
@@ -691,9 +808,11 @@ impl DaemonEngine {
         Ok(GameHealthSnapshot {
             daemon_version: crate::core::types::PROTOCOL_VERSION.to_string(),
             uptime_seconds: self.started_at.elapsed().as_secs(),
+            active_progression_mode,
             loaded_packs_count,
             pack_load_errors_count,
             total_journal_events: stats.total_events,
+            plane_b_events_committed: self.plane_b_events_committed.load(Ordering::Relaxed),
             sync_queue_depth: stats.pending_sync_count,
             synced_events_count: stats.synced_count,
             rejected_events_count: stats.rejected_count,
@@ -704,6 +823,9 @@ impl DaemonEngine {
             sync,
             plane_a,
             sessions,
+            installed_packs,
+            recent_observations,
+            watched_dirs: self.config.watched_observation_dirs.clone(),
             recent_notifications,
         })
     }
