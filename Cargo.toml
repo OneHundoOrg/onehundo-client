@@ -1,0 +1,24 @@
+[package]
+name = "onehundo-client"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/OneHundoOrg/onehundo-client"
+description = "OneHundo local daemon (onehundod), Plane A/B/C runtime evaluators, SQLite WAL journal, Game Health diagnostics, and cloud sync client."
+
+[lib]
+name = "onehundo_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "onehundod"
+path = "src/main.rs"
+
+[[bin]]
+name = "onehundo-desktop"
+path = "apps/desktop/main.rs"
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

@@ -1,0 +1,14 @@
+[Unit]
+Description=OneHundo Local Achievement Daemon (onehundod)
+After=default.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ONEHUNDO_PLATFORM_URL=https://app-3bb4-3000.prg1.zerops.app
+ExecStart=%h/.local/bin/onehundod
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
