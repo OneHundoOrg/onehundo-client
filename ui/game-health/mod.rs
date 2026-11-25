@@ -52,6 +52,41 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
         }
     }
 
+    let mut ring_rows = String::new();
+    if health.plane_a.rings.is_empty() {
+        ring_rows.push_str(
+            "<tr><td colspan=\"7\">No Plane A shared-memory rings registered yet.</td></tr>",
+        );
+    } else {
+        for r in &health.plane_a.rings {
+            let state_label = if r.active { "ACTIVE" } else { "CLOSED" };
+            ring_rows.push_str(&format!(
+                "<tr>\
+                 <td><code>{}</code></td>\
+                 <td><code>{}</code></td>\
+                 <td>{}</td>\
+                 <td>{} (seq: {})</td>\
+                 <td>seq_gaps: {} / producer_gaps: {} / crc_err: {}</td>\
+                 <td>eval: {}us (max {}us) / poll: {}us</td>\
+                 <td>{} / {} rules</td>\
+                 </tr>",
+                esc_html(&r.session_id),
+                esc_html(if r.shm_name.is_empty() { "in-process" } else { &r.shm_name }),
+                esc_html(state_label),
+                r.snapshots_consumed,
+                r.last_sequence_number,
+                r.sequence_gaps_detected,
+                r.producer_frame_gaps_reported,
+                r.crc_errors,
+                r.last_eval_latency_us,
+                r.max_eval_latency_us,
+                r.last_poll_latency_us,
+                r.unlocked_rules_count,
+                r.total_rules_count,
+            ));
+        }
+    }
+
     let mut notif_items = String::new();
     if health.recent_notifications.is_empty() {
         notif_items.push_str("<li>No notifications recorded yet.</li>");
@@ -168,6 +203,7 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
       <div class="card"><h2>Loaded Packs</h2><div class="val">{}</div></div>
       <div class="card"><h2>Journal Events / Sync Queue</h2><div class="val">{} / {} pending</div></div>
       <div class="card"><h2>Total Frame Gaps</h2><div class="val">{}</div></div>
+      <div class="card"><h2>Plane A SHM Rings / Latency</h2><div class="val">{} active / {}us max</div></div>
       <div class="card"><h2>Last Receipt / Acceptance</h2><div class="val">{} / {}</div></div>
       <div class="card"><h2>Plane C Observations</h2><div class="val">{}</div></div>
     </div>
@@ -192,6 +228,24 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
     </table>
   </section>
 
+  <section aria-labelledby="plane-a-heading">
+    <h2 id="plane-a-heading">Plane A Shared-Memory Rings</h2>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Session ID</th>
+          <th scope="col">SHM Ring</th>
+          <th scope="col">State</th>
+          <th scope="col">Snapshots Consumed</th>
+          <th scope="col">Frame Gaps / CRC</th>
+          <th scope="col">Latency</th>
+          <th scope="col">Rules Unlocked</th>
+        </tr>
+      </thead>
+      <tbody>{}</tbody>
+    </table>
+  </section>
+
   <section aria-labelledby="notifications-heading">
     <h2 id="notifications-heading">Recent Notifications</h2>
     <ul>{}</ul>
@@ -204,10 +258,13 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
         health.total_journal_events,
         health.sync_queue_depth,
         health.total_frame_gaps,
+        health.plane_a.active_rings_count,
+        health.plane_a.max_eval_latency_us,
         esc_html(health.last_receipt_status.as_deref().unwrap_or("NONE")),
         esc_html(health.last_acceptance_status.as_deref().unwrap_or("NONE")),
         health.observations_imported,
         session_rows,
+        ring_rows,
         notif_items
     )
 }

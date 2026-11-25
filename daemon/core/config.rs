@@ -9,6 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 static FALLBACK_UUID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+fn default_plane_a_max_frame_gaps_before_downgrade() -> u64 {
+    10
+}
+
 /// Generate a RFC 4122 UUID v4 using OS randomness (`/dev/urandom`) with monotonic fallback.
 pub fn generate_uuid_v4() -> String {
     let mut bytes = [0u8; 16];
@@ -100,6 +104,8 @@ pub struct DaemonConfig {
     pub sync_batch_size: usize,
     pub notifications_enabled: bool,
     pub shm_poll_interval_ms: u64,
+    #[serde(default = "default_plane_a_max_frame_gaps_before_downgrade")]
+    pub plane_a_max_frame_gaps_before_downgrade: u64,
 }
 
 impl Default for DaemonConfig {
@@ -120,6 +126,7 @@ impl Default for DaemonConfig {
             sync_batch_size: 100,
             notifications_enabled: true,
             shm_poll_interval_ms: 2,
+            plane_a_max_frame_gaps_before_downgrade: default_plane_a_max_frame_gaps_before_downgrade(),
         }
     }
 }

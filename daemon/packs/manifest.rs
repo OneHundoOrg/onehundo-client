@@ -185,22 +185,39 @@ pub struct MemoryConditionSpec {
     #[serde(default)]
     pub region_id: u32,
     /// Hex or integer guest offset/address
+    #[serde(default)]
     pub address: String,
-    /// "u8", "u16_le", "u16_be", "u32_le", "u32_be", "bit0".."bit7"
+    /// "u8", "u16_le", "u16_be", "u24_le", "u24_be", "u32_le", "u32_be",
+    /// "i8", "i16_le", "i16_be", "i32_le", "i32_be", "lower4", "upper4",
+    /// "bitcount", "bit0".."bit7"
     #[serde(default = "default_mem_size")]
     pub size: String,
     /// "==", "!=", "<", "<=", ">", ">="
     #[serde(default = "default_mem_op")]
     pub op: String,
-    /// Compare against constant or "delta" (previous frame value)
+    /// Compare against constant or rhs operand
+    #[serde(default)]
     pub value: Option<i64>,
     #[serde(default)]
     pub compare_delta: bool,
-    /// "normal", "reset_if", "pause_if"
+    /// "normal", "once", "reset_if", "pause_if", "add_source", "sub_source",
+    /// "add_hits", "sub_hits", "and_next", "or_next", "reset_next_if", "measured", "measured_if"
     #[serde(default = "default_cond_type")]
     pub kind: String,
     #[serde(default)]
     pub required_hits: u32,
+    /// LHS operand source: "mem" (default), "delta", "prior", "const", "invert"
+    #[serde(default)]
+    pub lhs_type: Option<String>,
+    /// RHS operand source: "const" (default unless compare_delta), "mem", "delta", "prior", "invert"
+    #[serde(default)]
+    pub rhs_type: Option<String>,
+    #[serde(default)]
+    pub rhs_region_id: Option<u32>,
+    #[serde(default)]
+    pub rhs_address: Option<String>,
+    #[serde(default)]
+    pub rhs_size: Option<String>,
 }
 
 fn default_mem_size() -> String {
@@ -212,15 +229,40 @@ fn default_mem_op() -> String {
 fn default_cond_type() -> String {
     "normal".to_string()
 }
+fn default_stat_event_kind() -> String {
+    "STAT_SET".to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRule {
     pub achievement_id: String,
+    /// Optional RetroAchievements (`rcheevos`) `memaddr` condition string (e.g. `0xH0020=1_d0xH0010=5.2.`)
+    #[serde(default)]
+    pub memaddr: Option<String>,
     #[serde(default)]
     pub conditions: Vec<MemoryConditionSpec>,
     /// Optional alternative condition groups (OR across groups, AND inside group)
     #[serde(default)]
     pub alt_groups: Vec<Vec<MemoryConditionSpec>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryStatRule {
+    pub stat_key: String,
+    /// "STAT_SET" or "STAT_INC"
+    #[serde(default = "default_stat_event_kind")]
+    pub event_kind: String,
+    #[serde(default)]
+    pub region_id: u32,
+    pub address: String,
+    #[serde(default = "default_mem_size")]
+    pub size: String,
+    /// Skip emitting value 0 on initial baseline frame
+    #[serde(default)]
+    pub only_when_nonzero: bool,
+    /// Optional guard conditions that must evaluate to true before updating this stat
+    #[serde(default)]
+    pub conditions: Vec<MemoryConditionSpec>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -229,6 +271,8 @@ pub struct RulesDocument {
     pub rules: Vec<SemanticRule>,
     #[serde(default)]
     pub memory_rules: Vec<MemoryRule>,
+    #[serde(default)]
+    pub memory_stats: Vec<MemoryStatRule>,
 }
 
 #[derive(Debug, Clone)]
@@ -236,6 +280,7 @@ pub struct LoadedPack {
     pub manifest: PackManifest,
     pub semantic_rules: Vec<SemanticRule>,
     pub memory_rules: Vec<MemoryRule>,
+    pub memory_stats: Vec<MemoryStatRule>,
     pub source_path: String,
 }
 
@@ -341,7 +386,8 @@ pub fn validate_and_parse_manifest(
 }
 
 pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<LoadedPack, String> {
-    let entries = super::zip_safe::read_and_validate_zip(bytes)?;
+    let entries = super::zip_safe::read_and_validate_zip(bytes)?
+        ;
     let manifest_bytes = entries
         .get("manifest.json")
         .ok_or_else(|| "pack archive missing required root 'manifest.json'".to_string())?;
@@ -351,6 +397,7 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
 
     let mut semantic_rules = Vec::new();
     let mut memory_rules = Vec::new();
+    let mut memory_stats = Vec::new();
 
     if let Some(sem) = &manifest.profiles.semantic {
         if let Some(rules_path) = &sem.rules_file {
@@ -371,6 +418,7 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
                 let doc: RulesDocument = serde_json::from_str(s)
                     .map_err(|e| format!("failed parsing rules file '{}': {}", rules_path, e))?;
                 memory_rules.extend(doc.memory_rules);
+                memory_stats.extend(doc.memory_stats);
             }
         }
     }
@@ -379,6 +427,7 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
         manifest,
         semantic_rules,
         memory_rules,
+        memory_stats,
         source_path: source_path.to_string(),
     })
 }

@@ -4,11 +4,11 @@
 > **Organization:** `OneHundoOrg` (`onehundo.org`)  
 > **Upstream Contracts:** [`onehundo-protocol`](https://github.com/OneHundoOrg/onehundo-protocol) (`v0.1.0`, Public, dual `MIT OR Apache-2.0`)  
 > **Cloud Target:** [`onehundo-platform`](https://github.com/OneHundoOrg/onehundo-platform) (Private, Proprietary; Zerops staging at `https://app-3bb4-3000.prg1.zerops.app`)  
-> **Current Phase:** Post-Phase 1.5 Baseline Complete — Ready for **Phase 2 (Plane A Shared-Memory Cross-Runtime Proof)**
+> **Current Phase:** Phase 2 Complete — Ready for **Phase 3 (Plane C External Observation & Desktop Experience)**
 
 ---
 
-## 1. Completed Baseline (Phase 1 & Phase 1.5)
+## 1. Completed Baseline (Phase 1 · Phase 1.5 · Phase 2)
 
 ### [x] Phase 1 — Plane B End-to-End Runtime & Cloud Sync
 - `onehundod` (`src/main.rs`, `daemon/core/engine.rs`): Unix socket IPC server, Commit-Before-Ack SQLite WAL journal (`PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;`), `event_journal` deduplication on `(producer_id, session_id, sequence_number)`, and materialized `trophy_state` / `stat_state`.
@@ -21,19 +21,21 @@
 - **Graceful shutdown & desktop CLI:** `SIGINT`/`SIGTERM` signal handlers + `POST /shutdown` endpoint in `daemon/diagnostics/server.rs`; `onehundo-desktop` (`apps/desktop/main.rs`) subcommands `start`, `stop`, `status`, `health`, `packs`, `import-obs`, `set-api-key`, and `sync-now`.
 - **Persistent service & binaries:** Checked-in `deploy/systemd/onehundod.service` (`~/.config/systemd/user/onehundod.service`) targeting `ONEHUNDO_PLATFORM_URL=https://app-3bb4-3000.prg1.zerops.app`, with release binaries installed to `~/.local/bin` and 2.5s background auto-sync verified live with `bbport` gameplay (`Cleric Beast` unlock -> OS toast -> cloud sync -> Zerops profile).
 - **Bloodborne pack parity:** `packs/sony.bloodborne.bbport.onehundo` (`pack_id`: `sony.bloodborne.bbport.pc`, `v0.7.0`, SHA-256 `6f35c670aef7f6101f571785e9c6e4d7334d17c02d418ee421d6a00c45301603`) aligned to Bloodborne's 34 base PSN trophies (`"0"`..`"33"`, with `a35`–`a40` / `d01`–`d06` provisional pending Old Hunters DLC in OAP).
-- **Plane A scaffolding:** `daemon/ipc/shm_arena.rs` (POSIX `shm_open` + `mmap` ring consumer enforcing `FREE -> WRITING -> READY -> READING -> FREE`), `daemon/evaluation/memory-arena/mod.rs`, `integrations/emulators/plane_a_emulator_harness.c`, and `tests/plane_a_evaluator_and_gaps.rs`.
+
+### [x] Phase 2 — Plane A Shared-Memory Cross-Runtime Proof
+- **Lock-free SHM Ring & Diagnostics (`daemon/ipc/shm_arena.rs`, `daemon/ipc/unix_socket.rs`, `daemon/diagnostics/mod.rs`, `daemon/core/engine.rs`, `ui/game-health/mod.rs`):** POSIX `shm_open` + `mmap` ring consumer enforcing `FREE -> WRITING -> READY -> READING -> FREE` with Acquire/Release atomics, IEEE CRC32 payload validation, zero game-thread blocking, `SlotOccupancy`/`ShmRingStats` polling telemetry, and merged SHM + IPC `FRAME_GAP` counters surfaced in `GET /health` and Game Health HTML.
+- **`rcheevos`-Compatible Evaluator (`daemon/evaluation/memory-arena/mod.rs`, `daemon/packs/manifest.rs`):** Full RetroAchievements `memaddr` parser and evaluator (`Mem`, `Delta`, `Prior`, `Once`, `ResetIf`, `PauseIf`, `AddSource`, `SubSource`, `AddHits`, `SubHits`, `AndNext`, `OrNext`, `ResetNextIf`, `Measured`, `i8`/`i16`/`i32`/`u24`/`u32_be`/nibbles/`bitcount`/`bit0..7`, memory-vs-memory RHS) plus `memory_stats` (`STAT_SET` / `STAT_INC`), transactional SQLite WAL (`synchronous = FULL`) commits with `RUNTIME_OBSERVED` provenance, `SPECTATOR` non-mutation, and `VERIFIED_INTEGRATION` -> `LOCAL` downgrade on `SaveStateLoad`, cheats, and `FairPlayViolation::ExcessiveFrameGap` (`plane_a_max_frame_gaps_before_downgrade`, default `10`).
+- **Dual-Runtime Portability Proof (`packs/onehundo.plane_a.cross_runtime.onehundo`, `integrations/emulators/plane_a_emulator_harness.c`, `integrations/static-recompilations/plane_a_recomp_harness.c`, `tests/plane_a_cross_runtime_proof.rs`):** Single `onehundo-validate`-verified `.onehundo` pack produces identical `RUNTIME_OBSERVED` unlocks and stats across both emulator (`rom_hash`) and static recompilation (`recomp_game_id` / `build_id`) harnesses, verified with ring-contention `FRAME_GAP` reporting, `SPECTATOR` non-mutation, `SAVE_STATE_LOAD` trust downgrade, and end-to-end `/v1/sync/events` cloud sync validation.
 
 ---
 
-## 2. Phase 2 Scope & File Ownership (Next)
+## 2. Phase 3 Scope & File Ownership (Next)
 
-**Objective:** Prove that a single `.onehundo` memory-condition pack runs identically across both a classic console emulator and a flat-memory static recompilation runtime with zero game-thread blocking.
+**Objective:** Import existing local achievement records cleanly (Plane C) and provide a richer local control center in Game Health & `onehundo-desktop`.
 
 ### Target Modules
-- **SHM Ring & Daemon Loop (`daemon/ipc/shm_arena.rs`, `daemon/core/engine.rs`, `src/main.rs`):** Connect live `ARENA_REGISTER` sessions to continuous `shm_open` ring slot consumption (`FREE -> WRITING -> READY -> READING -> FREE` via acquire/release atomics).
-- **Evaluator (`daemon/evaluation/memory-arena/mod.rs`):** Integrate real `rcheevos` rule evaluation over normalized guest memory snapshots, handle `SAVE_STATE_LOAD` / `SOFT_RESET` / `HARD_RESET` lifecycle signals cleanly, and emit `RUNTIME_OBSERVED` `UNLOCK_REQUEST` events to the SQLite journal & sync outbox.
-- **Diagnostics (`daemon/diagnostics/server.rs`, `ui/game-health/mod.rs`):** Surface `FRAME_GAP` counters, ring latency, and `evaluation_incomplete` status in `http://127.0.0.1:19850/health`.
-- **Dual-Runtime Harness (`integrations/emulators/plane_a_emulator_harness.c`, `integrations/static-recompilations/`):** Execute the exact same `.onehundo` memory pack against both an emulator bridge (`RETRO_MEMORY_SYSTEM_RAM`) and a flat-memory static recompilation target, verifying identical unlocks and zero frame stalls.
+- **External Importers (`daemon/observation/external-importers/`):** Modular importers (strictly isolated from `daemon/evaluation/`) for Goldberg/GSE JSON/INI, emulator trophy directories (`shadPS4` / `RPCS3`), and local save/log exports, plus directory watchers and `onehundo-desktop import-obs <file>` tagging records `LOCALLY_OBSERVED` / `LOCAL`.
+- **Game Health & Pack Management UI (`daemon/diagnostics/server.rs`, `ui/game-health/mod.rs`, `ui/pack-browser/`, `apps/desktop/main.rs`):** Interactive session mode/trust/downgrade visibility, Plane A `FRAME_GAP` drilldowns, installed `.onehundo` pack browser, sync queue inspection, and manual `Sync Now` / mode controls.
 
 ### Hard Boundaries
 - Never fork `onehundo-protocol` headers or schemas locally; consume `v0.1.0` contracts from `onehundo-protocol`.
@@ -48,10 +50,14 @@
 # Full Rust test suite (offline)
 cargo test --offline
 
-# Clippy lint check
-cargo clippy --all-targets
+# Compile / lint check (all targets)
+cargo check --all-targets
 
 # Strict ISO C99 compile checks for reference/integration examples
 gcc -std=c99 -pedantic -Wall -Wextra -Werror -I../onehundo-protocol/include \
-  -fsyntax-only integrations/native-ports/quick/onehundo_quick.h
+  -fsyntax-only integrations/emulators/plane_a_emulator_harness.c \
+  integrations/static-recompilations/plane_a_recomp_harness.c \
+  integrations/native-ports/bbport/bbport_live_demo.c
+gcc -std=c99 -pedantic -Wall -Wextra -Werror -I../onehundo-protocol/include \
+  -x c -fsyntax-only integrations/native-ports/quick/onehundo_quick.h
 ```

@@ -3,7 +3,7 @@
 > **Repository:** [`onehundo-client`](https://github.com/OneHundoOrg/onehundo-client) (Public, dual `MIT OR Apache-2.0`)  
 > **Organization:** `OneHundoOrg` (`onehundo.org`)  
 > **Role:** Local background daemon (`onehundod`), SQLite append-only journal & materialized state, Plane A (`rcheevos`) & Plane B (semantic) evaluators, Plane C external importers, baseline desktop notifications, `onehundo-desktop` CLI & `Game Health` diagnostics, and cloud sync worker (`onehundo-platform` `/v1/*` client).  
-> **Current Phase:** Post-Phase 1.5 baseline verified; entering **Phase 2 — Plane A Shared-Memory Cross-Runtime Proof**.  
+> **Current Phase:** Phase 2 (**Plane A Shared-Memory Cross-Runtime Proof**) verified; ready for **Phase 3 — Plane C External Observation & Desktop Experience**.  
 > **Target Audience:** Autonomous AI agents and human contributors working on the OneHundo local runtime, evaluators, and integrations.
 
 ---
@@ -81,7 +81,7 @@
 
 ## 4. Phase 2 Entry State & Verification Commands
 
-- **Phase 2 Goal:** Wire live Plane A shared-memory ring consumption (`daemon/ipc/shm_arena.rs`) + `rcheevos` evaluation (`daemon/evaluation/memory-arena/`) to prove a single `.onehundo` memory-condition pack runs identically across both a console emulator harness (`plane_a_emulator_harness.c` / libretro bridge) and a flat-memory static recompilation runtime, surfacing `FRAME_GAP` counters and ring latency in `/health` with zero game-thread stalls.
+- **Phase 2 Verified -> Phase 3 Next:** Live Plane A SHM ring consumption (`daemon/ipc/shm_arena.rs`), `rcheevos`-compatible evaluator + `memory_stats` (`daemon/evaluation/memory-arena/`), `/health` `FRAME_GAP` telemetry, and single-pack (`packs/onehundo.plane_a.cross_runtime.onehundo`) dual-runtime proof (`plane_a_emulator_harness.c` + `plane_a_recomp_harness.c`) are verified; next focus is Phase 3 (`daemon/observation/external-importers/` and Game Health / Pack Browser UI controls).
 - **Verify:**
   - `cargo test --offline` (or `cargo test`)
   - `cargo clippy --all-targets`

@@ -214,9 +214,9 @@ fn handle_ipc_client(
             }
             MSG_ARENA_REGISTER => {
                 if let Ok(reg) = serde_json::from_str::<ArenaRegisterPayload>(&payload_str) {
-                    let sid = active_session_id.clone().unwrap_or_else(|| {
-                        crate::core::config::generate_uuid_v4()
-                    });
+                    let sid = active_session_id
+                        .clone()
+                        .unwrap_or_else(crate::core::config::generate_uuid_v4);
                     engine.register_plane_a_region(
                         &sid,
                         reg.region_id,
@@ -232,6 +232,10 @@ fn handle_ipc_client(
                                 let d_stop = Arc::clone(&daemon_shutdown);
                                 let session_for_shm = sid.clone();
                                 let poll_ms = engine.config.shm_poll_interval_ms.max(1);
+                                eng.update_plane_a_ring_telemetry(
+                                    &session_for_shm,
+                                    consumer.ring_stats(true),
+                                );
                                 shm_thread = Some(thread::spawn(move || {
                                     while !stop_flag.load(Ordering::Relaxed)
                                         && !d_stop.load(Ordering::Relaxed)
@@ -247,7 +251,12 @@ fn handle_ipc_client(
                                                 &snap.payload,
                                             );
                                         }
-                                        if !processed_any {
+                                        if processed_any {
+                                            eng.update_plane_a_ring_telemetry(
+                                                &session_for_shm,
+                                                consumer.ring_stats(true),
+                                            );
+                                        } else {
                                             thread::sleep(Duration::from_millis(poll_ms));
                                         }
                                     }
@@ -261,6 +270,10 @@ fn handle_ipc_client(
                                             &snap.payload,
                                         );
                                     }
+                                    eng.update_plane_a_ring_telemetry(
+                                        &session_for_shm,
+                                        consumer.ring_stats(false),
+                                    );
                                 }));
                             }
                             Err(e) => {
@@ -274,7 +287,8 @@ fn handle_ipc_client(
                         "region_id": reg.region_id,
                     })
                     .to_string();
-                    let _ = write_wire_frame(&mut stream, MSG_ARENA_ACK, hdr.sequence_number, ack.as_bytes());
+                    let _ =
+                        write_wire_frame(&mut stream, MSG_ARENA_ACK, hdr.sequence_number, ack.as_bytes());
                 }
             }
             MSG_EVENT_PUBLISH => {

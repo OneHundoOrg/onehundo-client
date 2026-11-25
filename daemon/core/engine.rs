@@ -1,13 +1,18 @@
-use crate::core::config::{generate_uuid_v4, load_credentials, load_or_init_config, Credentials, DaemonConfig};
+use crate::core::config::{
+    generate_uuid_v4, load_credentials, load_or_init_config, Credentials, DaemonConfig,
+};
 use crate::core::session::{SessionInfo, SessionManager};
 use crate::core::types::{
     now_rfc3339, FairPlayViolation, IngestionPlane, LifecycleSignal, ProgressionMode, TrustTier,
 };
-use crate::diagnostics::{GameHealthSnapshot, SyncTelemetry};
+use crate::diagnostics::{
+    GameHealthSnapshot, PlaneARingTelemetry, PlaneATelemetry, SyncTelemetry,
+};
 use crate::evaluation::memory_arena::{FrameStepOutcome, MemoryArenaEvaluatorState};
 use crate::evaluation::semantic_events::{
     evaluate_and_commit_plane_b, SemanticCommitOutcome, SemanticEventPayload,
 };
+use crate::ipc::shm_arena::ShmRingStats;
 use crate::observation::external_importers::{
     import_observation_records, parse_observation_json_str, ObservationImportSummary,
 };
@@ -30,6 +35,7 @@ pub struct DaemonEngine {
     pub sessions: Mutex<SessionManager>,
     pub plane_a_evaluators: Mutex<HashMap<String, MemoryArenaEvaluatorState>>,
     pub plane_a_regions: Mutex<HashMap<String, HashMap<u32, usize>>>,
+    pub plane_a_rings: Mutex<HashMap<String, PlaneARingTelemetry>>,
     pub notifications: NotificationManager,
     pub sync_telemetry: Mutex<SyncTelemetry>,
     pub started_at: Instant,
@@ -75,6 +81,7 @@ impl DaemonEngine {
             sessions: Mutex::new(SessionManager::new()),
             plane_a_evaluators: Mutex::new(HashMap::new()),
             plane_a_regions: Mutex::new(HashMap::new()),
+            plane_a_rings: Mutex::new(HashMap::new()),
             sync_telemetry: Mutex::new(sync_tel),
             started_at: Instant::now(),
         }))
@@ -126,6 +133,34 @@ impl DaemonEngine {
     pub fn end_session(&self, session_id: &str) {
         if let Ok(mut s) = self.sessions.lock() {
             s.end_session(session_id);
+        }
+        if let Ok(mut rings) = self.plane_a_rings.lock() {
+            if let Some(r) = rings.get_mut(session_id) {
+                r.active = false;
+            }
+        }
+    }
+
+    pub fn update_plane_a_ring_telemetry(&self, session_id: &str, ring: ShmRingStats) {
+        if let Ok(mut rings) = self.plane_a_rings.lock() {
+            let entry = rings
+                .entry(session_id.to_string())
+                .or_insert_with(|| PlaneARingTelemetry {
+                    session_id: session_id.to_string(),
+                    ..Default::default()
+                });
+            entry.shm_name = ring.shm_name;
+            entry.active = ring.active;
+            entry.snapshots_consumed = ring.snapshots_consumed;
+            entry.last_sequence_number = ring.last_sequence_number;
+            entry.sequence_gaps_detected = ring.sequence_gaps_detected;
+            entry.shm_frame_gaps_reported = ring.producer_frame_gaps_reported;
+            entry.producer_frame_gaps_reported =
+                entry.shm_frame_gaps_reported.saturating_add(entry.ipc_frame_gaps_reported);
+            entry.crc_errors = ring.crc_errors;
+            entry.last_poll_latency_us = ring.last_poll_latency_us;
+            entry.max_poll_latency_us = entry.max_poll_latency_us.max(ring.max_poll_latency_us);
+            entry.slot_occupancy = ring.slot_occupancy;
         }
     }
 
@@ -236,8 +271,44 @@ impl DaemonEngine {
         frame_gap_count: u32,
         guest_memory: &[u8],
     ) -> Result<FrameStepOutcome, String> {
+        let eval_start = Instant::now();
+
         if lifecycle_signal == LifecycleSignal::SaveStateLoad {
             let _ = self.apply_fair_play_violation(session_id, FairPlayViolation::SaveStateLoad);
+        }
+
+        // Pre-check excessive FRAME_GAP threshold so fair-play downgrade applies before persisting unlocks
+        let max_gaps = self.config.plane_a_max_frame_gaps_before_downgrade;
+        if max_gaps > 0 {
+            let projected_gaps = {
+                let evals = self.plane_a_evaluators.lock().unwrap();
+                evals.get(session_id).map(|eval| {
+                    let skipped = if eval.last_sequence_number > 0
+                        && sequence_number > eval.last_sequence_number + 1
+                    {
+                        sequence_number - eval.last_sequence_number - 1
+                    } else {
+                        0
+                    };
+                    let explicit = if lifecycle_signal == LifecycleSignal::FrameGap {
+                        (frame_gap_count.max(1)) as u64
+                    } else {
+                        0
+                    };
+                    let add = if skipped > 0 && explicit > 0 {
+                        skipped.max(explicit)
+                    } else {
+                        skipped + explicit
+                    };
+                    eval.frame_gaps_recorded.saturating_add(add)
+                })
+            };
+            if let Some(total) = projected_gaps {
+                if total >= max_gaps {
+                    let _ = self
+                        .apply_fair_play_violation(session_id, FairPlayViolation::ExcessiveFrameGap);
+                }
+            }
         }
 
         let (producer_id, canonical_game_id, pack_id, mode, trust) = {
@@ -266,13 +337,13 @@ impl DaemonEngine {
             .cloned()
             .unwrap_or_default();
 
-        let outcome = {
+        let (outcome, unlocked_rules_count) = {
             let mut evals = self.plane_a_evaluators.lock().unwrap();
             let eval = evals
                 .entry(session_id.to_string())
                 .or_insert_with(|| MemoryArenaEvaluatorState::new(&canonical_game_id, session_id));
             let mut db = self.db.lock().unwrap();
-            eval.step_frame(
+            let out = eval.step_frame(
                 &mut db,
                 pack_clone.as_ref(),
                 &producer_id,
@@ -283,8 +354,31 @@ impl DaemonEngine {
                 &regions,
                 mode,
                 trust,
-            )?
+            )?;
+            let unlocked_cnt = eval.rules.values().filter(|r| r.triggered).count();
+            (out, unlocked_cnt)
         };
+
+        let eval_us = eval_start.elapsed().as_micros() as u64;
+        let total_rules_count = pack_clone
+            .as_ref()
+            .map(|p| p.memory_rules.len())
+            .unwrap_or(0);
+
+        {
+            let mut rings = self.plane_a_rings.lock().unwrap();
+            let entry = rings
+                .entry(session_id.to_string())
+                .or_insert_with(|| PlaneARingTelemetry {
+                    session_id: session_id.to_string(),
+                    active: true,
+                    ..Default::default()
+                });
+            entry.last_eval_latency_us = eval_us;
+            entry.max_eval_latency_us = entry.max_eval_latency_us.max(eval_us);
+            entry.unlocked_rules_count = unlocked_rules_count;
+            entry.total_rules_count = total_rules_count;
+        }
 
         {
             let mut sessions = self.sessions.lock().unwrap();
@@ -348,11 +442,32 @@ impl DaemonEngine {
                         ("unknown".to_string(), "unknown".to_string(), 0)
                     }
                 };
-                if let Ok(mut evals) = self.plane_a_evaluators.lock() {
+                let total_eval_gaps = {
+                    let mut evals = self.plane_a_evaluators.lock().unwrap();
                     if let Some(eval) = evals.get_mut(session_id) {
                         eval.frame_gaps_recorded += gap;
                         eval.evaluation_incomplete = true;
+                        eval.frame_gaps_recorded
+                    } else {
+                        gap
                     }
+                };
+                if let Ok(mut rings) = self.plane_a_rings.lock() {
+                    let entry = rings
+                        .entry(session_id.to_string())
+                        .or_insert_with(|| PlaneARingTelemetry {
+                            session_id: session_id.to_string(),
+                            ..Default::default()
+                        });
+                    entry.ipc_frame_gaps_reported += gap;
+                    entry.producer_frame_gaps_reported =
+                        entry.shm_frame_gaps_reported.saturating_add(entry.ipc_frame_gaps_reported);
+                }
+                if self.config.plane_a_max_frame_gaps_before_downgrade > 0
+                    && total_eval_gaps >= self.config.plane_a_max_frame_gaps_before_downgrade
+                {
+                    let _ = self
+                        .apply_fair_play_violation(session_id, FairPlayViolation::ExcessiveFrameGap);
                 }
                 let db = self.db.lock().unwrap();
                 record_frame_gap_db(
@@ -552,6 +667,27 @@ impl DaemonEngine {
         let sync = self.sync_telemetry.lock().unwrap().clone();
         let recent_notifications = self.notifications.recent();
 
+        let mut rings: Vec<PlaneARingTelemetry> =
+            self.plane_a_rings.lock().unwrap().values().cloned().collect();
+        rings.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+
+        let active_rings_count = rings.iter().filter(|r| r.active).count();
+        let total_snapshots_consumed = rings.iter().map(|r| r.snapshots_consumed).sum();
+        let total_sequence_gaps = rings.iter().map(|r| r.sequence_gaps_detected).sum();
+        let total_crc_errors = rings.iter().map(|r| r.crc_errors).sum();
+        let last_eval_latency_us = rings.iter().map(|r| r.last_eval_latency_us).max().unwrap_or(0);
+        let max_eval_latency_us = rings.iter().map(|r| r.max_eval_latency_us).max().unwrap_or(0);
+
+        let plane_a = PlaneATelemetry {
+            active_rings_count,
+            total_snapshots_consumed,
+            total_sequence_gaps,
+            total_crc_errors,
+            last_eval_latency_us,
+            max_eval_latency_us,
+            rings,
+        };
+
         Ok(GameHealthSnapshot {
             daemon_version: crate::core::types::PROTOCOL_VERSION.to_string(),
             uptime_seconds: self.started_at.elapsed().as_secs(),
@@ -566,6 +702,7 @@ impl DaemonEngine {
             last_receipt_status: stats.last_receipt_status,
             last_acceptance_status: stats.last_acceptance_status,
             sync,
+            plane_a,
             sessions,
             recent_notifications,
         })

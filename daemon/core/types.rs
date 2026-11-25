@@ -335,6 +335,7 @@ pub enum FairPlayViolation {
     CheatToggle,
     MemoryPoke,
     DebugConsoleOverride,
+    ExcessiveFrameGap,
 }
 
 impl FairPlayViolation {
@@ -344,6 +345,7 @@ impl FairPlayViolation {
             Self::CheatToggle => "cheat_toggle",
             Self::MemoryPoke => "memory_poke",
             Self::DebugConsoleOverride => "debug_console_override",
+            Self::ExcessiveFrameGap => "excessive_frame_gap",
         }
     }
 }

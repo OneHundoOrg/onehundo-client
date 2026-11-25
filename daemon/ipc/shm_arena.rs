@@ -4,10 +4,13 @@
 
 use crate::core::types::LifecycleSignal;
 use crate::ipc::wire::WIRE_MAGIC;
+use crate::packs::deflate::crc32;
+use serde::{Deserialize, Serialize};
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Instant;
 
 pub const RING_SLOT_COUNT: usize = 4;
 pub const RING_SLOT_CAPACITY: usize = 64 * 1024;
@@ -45,6 +48,28 @@ pub struct ArenaShmLayout {
     pub slot_count: u32,
     pub slot_capacity: u32,
     pub slots: [ArenaSlot; RING_SLOT_COUNT],
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SlotOccupancy {
+    pub free: u32,
+    pub writing: u32,
+    pub ready: u32,
+    pub reading: u32,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ShmRingStats {
+    pub shm_name: String,
+    pub active: bool,
+    pub snapshots_consumed: u64,
+    pub last_sequence_number: u64,
+    pub sequence_gaps_detected: u64,
+    pub producer_frame_gaps_reported: u64,
+    pub crc_errors: u64,
+    pub last_poll_latency_us: u64,
+    pub max_poll_latency_us: u64,
+    pub slot_occupancy: SlotOccupancy,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +113,13 @@ pub struct ShmArenaConsumer {
     fd: i32,
     pub shm_name: String,
     cursor: usize,
+    snapshots_consumed: u64,
+    last_sequence_number: u64,
+    sequence_gaps_detected: u64,
+    producer_frame_gaps_reported: u64,
+    crc_errors: u64,
+    last_poll_latency_us: u64,
+    max_poll_latency_us: u64,
 }
 
 unsafe impl Send for ShmArenaConsumer {}
@@ -148,6 +180,13 @@ impl ShmArenaConsumer {
                 fd,
                 shm_name: shm_name.to_string(),
                 cursor: 0,
+                snapshots_consumed: 0,
+                last_sequence_number: 0,
+                sequence_gaps_detected: 0,
+                producer_frame_gaps_reported: 0,
+                crc_errors: 0,
+                last_poll_latency_us: 0,
+                max_poll_latency_us: 0,
             })
         }
     }
@@ -157,8 +196,53 @@ impl ShmArenaConsumer {
         Err("POSIX shm_open arena not supported on non-Unix platforms".into())
     }
 
+    /// Observe current slot ownership distribution across the ring with Acquire ordering.
+    #[cfg(unix)]
+    pub fn slot_occupancy(&self) -> SlotOccupancy {
+        let mut occ = SlotOccupancy::default();
+        if self.ptr.is_null() {
+            return occ;
+        }
+        let layout = unsafe { &*self.ptr };
+        for slot in &layout.slots {
+            match slot.header.slot_state.load(Ordering::Acquire) {
+                SLOT_STATE_FREE => occ.free += 1,
+                SLOT_STATE_WRITING => occ.writing += 1,
+                SLOT_STATE_READY => occ.ready += 1,
+                SLOT_STATE_READING => occ.reading += 1,
+                _ => {}
+            }
+        }
+        occ
+    }
+
+    #[cfg(not(unix))]
+    pub fn slot_occupancy(&self) -> SlotOccupancy {
+        SlotOccupancy::default()
+    }
+
+    pub fn ring_stats(&self, active: bool) -> ShmRingStats {
+        ShmRingStats {
+            shm_name: self.shm_name.clone(),
+            active,
+            snapshots_consumed: self.snapshots_consumed,
+            last_sequence_number: self.last_sequence_number,
+            sequence_gaps_detected: self.sequence_gaps_detected,
+            producer_frame_gaps_reported: self.producer_frame_gaps_reported,
+            crc_errors: self.crc_errors,
+            last_poll_latency_us: self.last_poll_latency_us,
+            max_poll_latency_us: self.max_poll_latency_us,
+            slot_occupancy: if active {
+                self.slot_occupancy()
+            } else {
+                SlotOccupancy::default()
+            },
+        }
+    }
+
     /// Poll for a READY slot, transition READY -> READING via AcqRel CAS,
-    /// copy payload safely bounded by `RING_SLOT_CAPACITY`, and release READING -> FREE.
+    /// copy payload safely bounded by `RING_SLOT_CAPACITY`, verify optional CRC32,
+    /// and release READING -> FREE.
     #[cfg(unix)]
     pub fn poll_next_slot(&mut self) -> Option<AcquiredSnapshot> {
         let layout = unsafe { &*self.ptr };
@@ -176,6 +260,7 @@ impl ShmArenaConsumer {
                 )
                 .is_ok()
             {
+                let start = Instant::now();
                 self.cursor = (idx + 1) % RING_SLOT_COUNT;
                 let seq = slot.header.sequence_number;
                 let ts = slot.header.timestamp_nanos;
@@ -183,12 +268,31 @@ impl ShmArenaConsumer {
                     .unwrap_or(LifecycleSignal::NormalFrame);
                 let gap = slot.header.frame_gap_count;
                 let sz = (slot.header.payload_size_bytes as usize).min(RING_SLOT_CAPACITY);
+                let expected_crc = slot.header.crc32;
                 let payload = slot.payload[..sz].to_vec();
 
                 // Transition READING -> FREE with Release ordering
                 slot.header
                     .slot_state
                     .store(SLOT_STATE_FREE, Ordering::Release);
+
+                let elapsed_us = start.elapsed().as_micros() as u64;
+                self.last_poll_latency_us = elapsed_us;
+                self.max_poll_latency_us = self.max_poll_latency_us.max(elapsed_us);
+
+                if expected_crc != 0 && crc32(&payload) != expected_crc {
+                    self.crc_errors += 1;
+                    continue;
+                }
+
+                if self.last_sequence_number > 0 && seq > self.last_sequence_number + 1 {
+                    self.sequence_gaps_detected += seq - self.last_sequence_number - 1;
+                }
+                if sig == LifecycleSignal::FrameGap {
+                    self.producer_frame_gaps_reported += (gap.max(1)) as u64;
+                }
+                self.last_sequence_number = self.last_sequence_number.max(seq);
+                self.snapshots_consumed += 1;
 
                 return Some(AcquiredSnapshot {
                     slot_index: idx,
