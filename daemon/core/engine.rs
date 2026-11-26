@@ -272,17 +272,19 @@ impl DaemonEngine {
             self.plane_b_events_committed.fetch_add(1, Ordering::Relaxed);
         }
 
-        for unlocked in &outcome.newly_unlocked {
-            self.notifications.notify_unlock(
-                &ev.canonical_game_id,
-                &unlocked.title,
-                &unlocked.description,
-                unlocked.points,
-                unlocked.progression_mode,
-                unlocked.trust_tier,
-                unlocked.verification_state,
-            );
-        }
+        let game_title = pack_clone.as_ref().map(|p| p.manifest.title.as_str());
+                for unlocked in &outcome.newly_unlocked {
+                    self.notifications.notify_unlock(
+                        &ev.canonical_game_id,
+                        game_title,
+                        &unlocked.title,
+                        &unlocked.description,
+                        unlocked.points,
+                        unlocked.progression_mode,
+                        unlocked.trust_tier,
+                        unlocked.verification_state,
+                    );
+                }
 
         Ok(outcome)
     }
@@ -446,8 +448,17 @@ impl DaemonEngine {
             } else {
                 crate::core::types::VerificationState::Unverified
             };
-            self.notifications
-                .notify_unlock(&canonical_game_id, &title, &desc, pts, mode, trust, ver);
+            let game_title = pack_clone.as_ref().map(|p| p.manifest.title.as_str());
+                        self.notifications.notify_unlock(
+                            &canonical_game_id,
+                            game_title,
+                            &title,
+                            &desc,
+                            pts,
+                            mode,
+                            trust,
+                            ver,
+                        );
         }
 
         Ok(outcome)
@@ -589,33 +600,44 @@ impl DaemonEngine {
             dry_run,
         };
         let packs_guard = self.packs.lock().unwrap();
-        let summary = {
-            let mut db = self.db.lock().unwrap();
-            import_observation_path_with_options(&mut db, path, Some(&packs_guard), &opts)?
-        };
-        drop(packs_guard);
+                let summary = {
+                    let mut db = self.db.lock().unwrap();
+                    import_observation_path_with_options(&mut db, path, Some(&packs_guard), &opts)?
+                };
+                let game_titles: HashMap<String, String> = summary
+                    .records
+                    .iter()
+                    .filter_map(|rec| {
+                        packs_guard
+                            .get(&rec.canonical_game_id)
+                            .map(|p| (rec.canonical_game_id.clone(), p.manifest.title.clone()))
+                    })
+                    .collect();
+                drop(packs_guard);
 
-        if !summary.dry_run && summary.imported > 0 {
-            let imported_ids: std::collections::HashSet<&str> =
-                summary.observation_ids.iter().map(String::as_str).collect();
-            for rec in &summary.records {
-                if imported_ids.contains(rec.observation_id.as_str())
-                    && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
-                    && rec.unlocked == Some(true)
-                {
-                    self.notifications.notify_unlock(
-                        &rec.canonical_game_id,
-                        &rec.key,
-                        rec.provenance_notes
-                            .as_deref()
-                            .unwrap_or("Imported via Plane C external observer"),
-                        0,
-                        rec.progression_mode,
-                        rec.trust_tier,
-                        rec.verification_state,
-                    );
-                }
-            }
+                if !summary.dry_run && summary.imported > 0 {
+                    let imported_ids: std::collections::HashSet<&str> =
+                        summary.observation_ids.iter().map(String::as_str).collect();
+                    for rec in &summary.records {
+                        if imported_ids.contains(rec.observation_id.as_str())
+                            && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
+                            && rec.unlocked == Some(true)
+                        {
+                            let game_title = game_titles.get(&rec.canonical_game_id).map(String::as_str);
+                            self.notifications.notify_unlock(
+                                &rec.canonical_game_id,
+                                game_title,
+                                &rec.key,
+                                rec.provenance_notes
+                                    .as_deref()
+                                    .unwrap_or("Imported via Plane C external observer"),
+                                0,
+                                rec.progression_mode,
+                                rec.trust_tier,
+                                rec.verification_state,
+                            );
+                        }
+                    }
         }
         Ok(summary)
     }

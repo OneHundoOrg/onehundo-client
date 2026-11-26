@@ -8,6 +8,8 @@ use std::sync::Mutex;
 pub struct NotificationEvent {
     pub timestamp: String,
     pub kind: String,
+    #[serde(default)]
+    pub app_name: Option<String>,
     pub title: String,
     pub body: String,
     pub canonical_game_id: Option<String>,
@@ -34,21 +36,24 @@ impl NotificationManager {
     pub fn notify_unlock(
         &self,
         canonical_game_id: &str,
+        game_title: Option<&str>,
         title: &str,
         description: &str,
-        points: u32,
+        _points: u32,
         mode: ProgressionMode,
         trust: TrustTier,
         verification: VerificationState,
     ) {
-        let heading = format!("Achievement Unlocked ({} pts)", points);
-        let body = format!(
-            "{} — {} [{} / {} / {}]",
-            title, description, mode, trust, verification
-        );
+        let app_name = game_title
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(str::to_string);
+        let heading = format!("🏆 {}", title);
+        let body = description.to_string();
         self.push_and_dispatch(NotificationEvent {
             timestamp: now_rfc3339(),
             kind: "achievement_unlock".to_string(),
+            app_name,
             title: heading,
             body,
             canonical_game_id: Some(canonical_game_id.to_string()),
@@ -73,6 +78,7 @@ impl NotificationManager {
         self.push_and_dispatch(NotificationEvent {
             timestamp: now_rfc3339(),
             kind: "trust_downgrade".to_string(),
+            app_name: None,
             title: heading,
             body,
             canonical_game_id: Some(canonical_game_id.to_string()),
@@ -91,6 +97,7 @@ impl NotificationManager {
         self.push_and_dispatch(NotificationEvent {
             timestamp: now_rfc3339(),
             kind: "frame_gap".to_string(),
+            app_name: None,
             title: heading,
             body,
             canonical_game_id: Some(canonical_game_id.to_string()),
@@ -103,8 +110,9 @@ impl NotificationManager {
     fn push_and_dispatch(&self, ev: NotificationEvent) {
         eprintln!("[onehundo-notify] {}: {}", ev.title, ev.body);
         if self.os_toasts_enabled {
+            let app_name = ev.app_name.as_deref().unwrap_or("OneHundo");
             let _ = Command::new("notify-send")
-                .args(["--app-name=OneHundo", &ev.title, &ev.body])
+                .args([&format!("--app-name={}", app_name), &ev.title, &ev.body])
                 .spawn();
         }
         if let Ok(mut hist) = self.history.lock() {
