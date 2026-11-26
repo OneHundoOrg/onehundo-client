@@ -50,7 +50,6 @@ pub struct DaemonEngine {
 impl DaemonEngine {
     pub fn initialize(mut config: DaemonConfig) -> Result<Arc<Self>, String> {
         let loaded_cfg = load_or_init_config(&config.config_dir).unwrap_or_else(|_| config.clone());
-        // Preserve CLI overrides on config while inheriting persisted device_uuid, platform_url, and watched dirs
         if config.device_uuid.is_empty() {
             config.device_uuid = if loaded_cfg.device_uuid.is_empty() {
                 generate_uuid_v4()
@@ -211,7 +210,6 @@ impl DaemonEngine {
                     .as_deref()
                     .and_then(ProgressionMode::from_str_strict)
                     .unwrap_or(s.progression_mode);
-                // Effective trust tier respects automatic downgrade (never escalates above active_trust_tier)
                 let req_trust = ev
                     .trust_tier
                     .as_deref()
@@ -273,18 +271,18 @@ impl DaemonEngine {
         }
 
         let game_title = pack_clone.as_ref().map(|p| p.manifest.title.as_str());
-                for unlocked in &outcome.newly_unlocked {
-                    self.notifications.notify_unlock(
-                        &ev.canonical_game_id,
-                        game_title,
-                        &unlocked.title,
-                        &unlocked.description,
-                        unlocked.points,
-                        unlocked.progression_mode,
-                        unlocked.trust_tier,
-                        unlocked.verification_state,
-                    );
-                }
+        for unlocked in &outcome.newly_unlocked {
+            self.notifications.notify_unlock(
+                &ev.canonical_game_id,
+                game_title,
+                &unlocked.title,
+                &unlocked.description,
+                unlocked.points,
+                unlocked.progression_mode,
+                unlocked.trust_tier,
+                unlocked.verification_state,
+            );
+        }
 
         Ok(outcome)
     }
@@ -312,7 +310,6 @@ impl DaemonEngine {
             let _ = self.apply_fair_play_violation(session_id, FairPlayViolation::SaveStateLoad);
         }
 
-        // Pre-check excessive FRAME_GAP threshold so fair-play downgrade applies before persisting unlocks
         let max_gaps = self.config.plane_a_max_frame_gaps_before_downgrade;
         if max_gaps > 0 {
             let projected_gaps = {
@@ -449,16 +446,16 @@ impl DaemonEngine {
                 crate::core::types::VerificationState::Unverified
             };
             let game_title = pack_clone.as_ref().map(|p| p.manifest.title.as_str());
-                        self.notifications.notify_unlock(
-                            &canonical_game_id,
-                            game_title,
-                            &title,
-                            &desc,
-                            pts,
-                            mode,
-                            trust,
-                            ver,
-                        );
+            self.notifications.notify_unlock(
+                &canonical_game_id,
+                game_title,
+                &title,
+                &desc,
+                pts,
+                mode,
+                trust,
+                ver,
+            );
         }
 
         Ok(outcome)
@@ -600,44 +597,70 @@ impl DaemonEngine {
             dry_run,
         };
         let packs_guard = self.packs.lock().unwrap();
-                let summary = {
-                    let mut db = self.db.lock().unwrap();
-                    import_observation_path_with_options(&mut db, path, Some(&packs_guard), &opts)?
-                };
-                let game_titles: HashMap<String, String> = summary
-                    .records
-                    .iter()
-                    .filter_map(|rec| {
-                        packs_guard
-                            .get(&rec.canonical_game_id)
-                            .map(|p| (rec.canonical_game_id.clone(), p.manifest.title.clone()))
-                    })
-                    .collect();
-                drop(packs_guard);
+        let summary = {
+            let mut db = self.db.lock().unwrap();
+            import_observation_path_with_options(&mut db, path, Some(&packs_guard), &opts)?
+        };
+        let pack_meta: HashMap<String, (String, HashMap<String, (String, String)>)> = summary
+            .records
+            .iter()
+            .filter_map(|rec| {
+                packs_guard.get(&rec.canonical_game_id).map(|p| {
+                    let ach_map: HashMap<String, (String, String)> = p
+                        .manifest
+                        .achievements
+                        .iter()
+                        .map(|a| {
+                            (
+                                a.canonical_achievement_id.clone(),
+                                (a.title.clone(), a.description.clone()),
+                            )
+                        })
+                        .collect();
+                    (
+                        rec.canonical_game_id.clone(),
+                        (p.manifest.title.clone(), ach_map),
+                    )
+                })
+            })
+            .collect();
+        drop(packs_guard);
 
-                if !summary.dry_run && summary.imported > 0 {
-                    let imported_ids: std::collections::HashSet<&str> =
-                        summary.observation_ids.iter().map(String::as_str).collect();
-                    for rec in &summary.records {
-                        if imported_ids.contains(rec.observation_id.as_str())
-                            && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
-                            && rec.unlocked == Some(true)
-                        {
-                            let game_title = game_titles.get(&rec.canonical_game_id).map(String::as_str);
-                            self.notifications.notify_unlock(
-                                &rec.canonical_game_id,
-                                game_title,
-                                &rec.key,
-                                rec.provenance_notes
-                                    .as_deref()
-                                    .unwrap_or("Imported via Plane C external observer"),
-                                0,
-                                rec.progression_mode,
-                                rec.trust_tier,
-                                rec.verification_state,
-                            );
-                        }
-                    }
+        if !summary.dry_run && summary.imported > 0 {
+            let imported_ids: std::collections::HashSet<&str> =
+                summary.observation_ids.iter().map(String::as_str).collect();
+            for rec in &summary.records {
+                if imported_ids.contains(rec.observation_id.as_str())
+                    && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
+                    && rec.unlocked == Some(true)
+                {
+                    let (game_title, ach_title, ach_desc) = pack_meta
+                        .get(&rec.canonical_game_id)
+                        .map(|(g_title, ach_map)| {
+                            if let Some((t, d)) = ach_map.get(&rec.key) {
+                                (Some(g_title.as_str()), t.as_str(), d.as_str())
+                            } else {
+                                (
+                                    Some(g_title.as_str()),
+                                    rec.key.as_str(),
+                                    "Achievement unlocked",
+                                )
+                            }
+                        })
+                        .unwrap_or((None, rec.key.as_str(), "Achievement unlocked"));
+
+                    self.notifications.notify_unlock(
+                        &rec.canonical_game_id,
+                        game_title,
+                        ach_title,
+                        ach_desc,
+                        0,
+                        rec.progression_mode,
+                        rec.trust_tier,
+                        rec.verification_state,
+                    );
+                }
+            }
         }
         Ok(summary)
     }
