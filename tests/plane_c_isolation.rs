@@ -50,6 +50,50 @@ fn build_synthetic_tropusr_dat(entries: &[(u32, u32, u64)]) -> Vec<u8> {
     buf
 }
 
+fn build_synthetic_longshot_progress_sav(
+    skulltulas: i32,
+    max_hearts_quarters: i32,
+    bool64s: &[u64],
+    equip_primary: Option<&str>,
+) -> Vec<u8> {
+    let mut scalars: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
+    scalars.insert(0xa779_21d7, skulltulas as u32);
+    scalars.insert(0x31ab_5580, max_hearts_quarters as u32);
+
+    let extra_entries = 1 + usize::from(equip_primary.is_some());
+    let data_off = 0x28 + (scalars.len() + extra_entries) * 8;
+    let mut tail = Vec::new();
+
+    scalars.insert(0xa3db_7114, (data_off + tail.len()) as u32);
+    for &b in bool64s {
+        tail.extend_from_slice(&b.to_le_bytes());
+    }
+    tail.extend_from_slice(&0u64.to_le_bytes());
+
+    if let Some(eq) = equip_primary {
+        scalars.insert(0xfb11_7672, (data_off + tail.len()) as u32);
+        let mut slot = [0u8; 64];
+        let eb = eq.as_bytes();
+        let copy_len = eb.len().min(63);
+        slot[..copy_len].copy_from_slice(&eb[..copy_len]);
+        tail.extend_from_slice(&slot);
+    }
+
+    let mut buf = vec![0u8; data_off + tail.len()];
+    buf[0..4].copy_from_slice(&0x0102_0304u32.to_le_bytes());
+    buf[4..8].copy_from_slice(&0x002d_80ebu32.to_le_bytes());
+    buf[8..12].copy_from_slice(&(data_off as u32).to_le_bytes());
+
+    let mut cursor = 0x28usize;
+    for (h, v) in scalars {
+        buf[cursor..cursor + 4].copy_from_slice(&h.to_le_bytes());
+        buf[cursor + 4..cursor + 8].copy_from_slice(&v.to_le_bytes());
+        cursor += 8;
+    }
+    buf[data_off..].copy_from_slice(&tail);
+    buf
+}
+
 #[test]
 fn imports_protocol_observation_fixture_and_isolates_from_evaluators() {
     let dir = common::temp_test_dir("plane_c");
@@ -178,7 +222,10 @@ fn rejects_gameplay_evidence_classes_and_audits_all_observation_sources() {
             audited += 1;
         }
     }
-    assert!(audited >= 5, "expected mod + 4 submodule files audited");
+    assert!(
+        audited >= 6,
+        "expected mod + 5 submodule files audited (incl. longshot.rs)"
+    );
 
     let _ = fs::remove_dir_all(&dir);
 }
@@ -601,5 +648,127 @@ fn directory_watcher_and_spectator_mode_isolation_and_game_health_http_ui() {
 
     shutdown.store(true, Ordering::SeqCst);
     let _ = http_handle.join();
+    let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn longshot_binary_save_watcher_and_spectator_non_mutation() {
+    let dir = common::temp_test_dir("plane_c_longshot");
+    let watch_dir = dir.join("longshot_save/5a3c9e1f0b7d2468/slot_00");
+    let packs_dir = dir.join("packs");
+    fs::create_dir_all(&watch_dir).unwrap();
+    fs::create_dir_all(&packs_dir).unwrap();
+
+    let ls_src =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/nintendo.oot.longshot.pc.onehundo");
+    fs::copy(&ls_src, packs_dir.join("nintendo.oot.longshot.pc.onehundo")).unwrap();
+
+    let mut cfg = DaemonConfig::default();
+    cfg.config_dir = dir.join("cfg");
+    cfg.data_dir = dir.join("data");
+    cfg.packs_dirs = vec![packs_dir];
+    cfg.watched_observation_dirs = vec![WatchedObservationDir {
+        path: dir.join("longshot_save"),
+        canonical_game_id: None,
+    }];
+    cfg.notifications_enabled = false;
+
+    let engine = DaemonEngine::initialize(cfg).expect("init longshot engine");
+
+    // 1. Watcher picks up nested progress.sav under watched root cleanly
+    let sav_path = watch_dir.join("progress.sav");
+    let sav_v1 = build_synthetic_longshot_progress_sav(
+        16,
+        16, // 4 hearts = 3 base + 1 Deku container + 0 heart pieces
+        &[0xf914_fa36_7471_a3e3],
+        None,
+    );
+    fs::write(&sav_path, &sav_v1).unwrap();
+
+    let poll1 = engine.poll_watched_observation_dirs();
+    assert_eq!(poll1.files_changed, 1);
+    assert_eq!(poll1.imported, 4); // a01 + skulltulas_collected + heart_pieces + bosses_defeated
+
+    let poll2 = engine.poll_watched_observation_dirs();
+    assert_eq!(poll2.files_changed, 0);
+    assert_eq!(poll2.imported, 0);
+
+    {
+        let db = engine.db.lock().unwrap();
+        let trophies = list_trophies(&db, Some("nintendo.oot.longshot.pc")).unwrap();
+        assert_eq!(trophies.len(), 1);
+        assert_eq!(trophies[0].canonical_achievement_id, "a01");
+        assert_eq!(trophies[0].evidence_class, "LOCALLY_OBSERVED");
+        assert_eq!(trophies[0].verification_state, "UNVERIFIED");
+
+        let stats = list_stats(&db, Some("nintendo.oot.longshot.pc")).unwrap();
+        assert_eq!(
+            stats
+                .iter()
+                .find(|s| s.stat_key == "skulltulas_collected")
+                .and_then(|s| s.int_value),
+            Some(16)
+        );
+        assert_eq!(
+            stats
+                .iter()
+                .find(|s| s.stat_key == "bosses_defeated")
+                .and_then(|s| s.int_value),
+            Some(1)
+        );
+        assert_eq!(
+            stats
+                .iter()
+                .find(|s| s.stat_key == "heart_pieces")
+                .and_then(|s| s.int_value),
+            Some(0)
+        );
+
+        let null_ts_count: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM observation_journal WHERE canonical_game_id = 'nintendo.oot.longshot.pc' AND source_timestamp IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(null_ts_count, 4);
+    }
+
+    // 2. Pack registration maps nintendo.oot.longshot.pc -> nintendo-provisional-oot-switch2
+    {
+        let reg = engine.packs.lock().unwrap();
+        let pack = reg.get("nintendo.oot.longshot.pc").expect("longshot pack loaded");
+        assert_eq!(
+            pack.mapped_oap_edition.as_deref(),
+            Some("nintendo-provisional-oot-switch2")
+        );
+    }
+
+    // 3. SPECTATOR mode must NOT mutate trophy_state or stat_state when updated save arrives
+    engine.set_progression_mode(None, ProgressionMode::Spectator);
+    let sav_v2 = build_synthetic_longshot_progress_sav(
+        100,
+        24,
+        &[0xf914_fa36_7471_a3e3, 0xff11_593a_2277_8e7e],
+        Some("Weapon_Sword_Master"),
+    );
+    fs::write(&sav_path, &sav_v2).unwrap();
+    let poll_spec = engine.poll_watched_observation_dirs();
+    assert_eq!(poll_spec.files_changed, 1);
+
+    {
+        let db = engine.db.lock().unwrap();
+        let trophies = list_trophies(&db, Some("nintendo.oot.longshot.pc")).unwrap();
+        assert_eq!(trophies.len(), 1); // still only a01 from STANDARD
+        let stats = list_stats(&db, Some("nintendo.oot.longshot.pc")).unwrap();
+        assert_eq!(
+            stats
+                .iter()
+                .find(|s| s.stat_key == "skulltulas_collected")
+                .and_then(|s| s.int_value),
+            Some(16)
+        );
+    }
+
     let _ = fs::remove_dir_all(&dir);
 }

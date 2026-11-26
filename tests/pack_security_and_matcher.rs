@@ -69,6 +69,39 @@ fn validates_bloodborne_bbport_production_pack() {
 }
 
 #[test]
+fn validates_oot_longshot_production_pack() {
+    let pack_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("packs/nintendo.oot.longshot.pc.onehundo");
+    let bytes = fs::read(&pack_path).expect("read nintendo.oot.longshot.pc.onehundo");
+    let loaded = load_pack_from_zip_bytes(&bytes, &pack_path.display().to_string())
+        .expect("nintendo.oot.longshot.pc.onehundo must validate");
+    assert_eq!(loaded.manifest.pack_id, "nintendo.oot.longshot.pc");
+    assert_eq!(loaded.manifest.canonical_game_id, "nintendo.oot.longshot.pc");
+    assert_eq!(
+        loaded.mapped_oap_edition.as_deref(),
+        Some("nintendo-provisional-oot-switch2")
+    );
+    assert_eq!(loaded.manifest.achievements.len(), 12);
+
+    let mut reg = PackRegistry::new();
+    reg.insert_pack(loaded);
+    let (_, matched) = reg
+        .match_pack(&MatchQuery {
+            canonical_game_id: Some("nintendo.oot.longshot.pc".into()),
+            sidecar_uuid: None,
+            rom_hash: None,
+            recomp_game_id: Some("longshot".into()),
+            build_id: Some("longshot-nightly-805-6b928cb4".into()),
+            asset_archive_hash: None,
+            platform_id: Some("provisional:oot-switch2".into()),
+            region: None,
+        })
+        .expect("longshot query must match nintendo.oot.longshot.pc");
+    assert_eq!(matched.pack_id, "nintendo.oot.longshot.pc");
+    assert_eq!(matched.canonical_game_id, "nintendo.oot.longshot.pc");
+}
+
+#[test]
 fn rejects_zip_slip_symlink_and_executables() {
     let zip_slip = common::build_test_zip(&[
         ("manifest.json", VALID_MANIFEST.as_bytes(), 0o100644 << 16),

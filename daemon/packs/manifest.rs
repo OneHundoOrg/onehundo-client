@@ -360,6 +360,14 @@ pub fn derive_mapped_oap_edition(manifest: &PackManifest) -> Option<String> {
     if manifest.canonical_game_id == "shared.cross_runtime.chronos" {
         return Some("ra-chronos".to_string());
     }
+    if manifest.canonical_game_id == "nintendo.oot.longshot.pc"
+        || manifest
+            .matchers
+            .iter()
+            .any(|m| m.matcher_type == MatcherType::PlatformId && m.value.eq_ignore_ascii_case("provisional:oot-switch2"))
+    {
+        return Some("nintendo-provisional-oot-switch2".to_string());
+    }
     manifest
         .matchers
         .iter()

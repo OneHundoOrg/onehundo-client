@@ -39,7 +39,7 @@
 3. **Daemon Lifecycle & Socket Hygiene:**
    - Default Unix socket path is `$XDG_RUNTIME_DIR/onehundo.sock` (falling back to `/tmp/onehundo.sock`, or overridden by `ONEHUNDO_SOCKET` / `--socket`).
    - Enforce single-instance exclusivity via `flock` (`$XDG_RUNTIME_DIR/onehundod.lock`), graceful shutdown on `SIGINT`/`SIGTERM` or `POST /shutdown` (`onehundo-desktop stop`), and concise probing via `onehundo-desktop status`.
-   - Persistent user daemon unit lives at `deploy/systemd/onehundod.service` (installed to `~/.config/systemd/user/onehundod.service`, binaries in `~/.local/bin`, targeting `ONEHUNDO_PLATFORM_URL=https://app-3bb4-3000.prg1.zerops.app`).
+   - Persistent user daemon unit lives at `deploy/systemd/onehundod.service` (installed to `~/.config/systemd/user/onehundod.service`, binaries in `~/.local/bin`, targeting `ONEHUNDO_PLATFORM_URL=https://onehundo.org`).
 4. **Four Orthogonal State Dimensions (Never Collapse):**
    - `progression_mode`: `STANDARD` | `ENCORE` | `SPECTATOR`
      - `SPECTATOR` must **never** mutate persistent player progression (local materialized state or synced progression).
@@ -69,11 +69,11 @@
 - `daemon/packs/`: `.onehundo` (provisional) pack discovery, archive/schema validation (enforcing zip-slip/symlink/size safety), SHA-256 + OAP edition summaries, and deterministic matcher precedence.
 - `daemon/evaluation/memory-arena/`: Plane A memory-arena / `rcheevos` evaluator, save-state progress serialization, reset hooks, and `FRAME_GAP` tracking.
 - `daemon/evaluation/semantic-events/`: Plane B stat accumulators, thresholds, and direct unlock evaluation.
-- `daemon/observation/external-importers/`: Plane C passive Goldberg/GSE, RPCS3/shadPS4 trophy dir, and `ObservationRecord`/save-export importers + directory watcher (strictly isolated from `evaluation/`).
+- `daemon/observation/external-importers/`: Plane C passive Goldberg/GSE, RPCS3/shadPS4 trophy dir, Longshot binary save (`longshot.rs`), and `ObservationRecord`/save-export importers + directory watcher (strictly isolated from `evaluation/`).
 - `daemon/sync/`: Background HTTP batch sync client targeting `onehundo-platform` (`/v1/devices/register`, `/v1/packs/resolve`, `/v1/sync/events`).
 - `daemon/diagnostics/`: `Game Health` control center & status API (`http://127.0.0.1:19850/`, `/ui/packs`, `/health`, `/packs`, `/sync-now`, `/session/mode`, `/v1/observation/import`, `/shutdown`).
 - `integrations/`: Opt-in integration adapters (`emulators/` including `plane_a_emulator_harness.c`, `static-recompilations/`, `native-ports/` including `bbport_live_demo.c` and `onehundo_quick.h`, `pc-games/`, and Windows `launchbox/`).
-- `packs/`: Local validated packs (including `sony.bloodborne.bbport.onehundo`, SHA-256 `6f35c670...`).
+- `packs/`: Local validated packs (including `sony.bloodborne.bbport.onehundo`, SHA-256 `6f35c670...`, and `nintendo.oot.longshot.pc.onehundo`, SHA-256 `6b4c768c...`).
 - `ui/`: Baseline `notifications/` (OS toast notifications), `game-health/` (control center HTML), `pack-browser/` (installed `.onehundo` pack browser HTML), and optional future `overlays/`.
 - `tests/`: Unit, crash-recovery (`SIGKILL` commit-before-ack), replay-idempotency, mode-isolation (`STANDARD`/`ENCORE`/`SPECTATOR`), daemon lock/auto-sync, Plane A evaluator/gaps, Plane C isolation & importers/watcher/UI, and end-to-end C SDK + platform tests.
 
@@ -81,7 +81,7 @@
 
 ## 4. Phase 3 Entry State & Verification Commands
 
-- **Phase 3 Verified -> Phase 4 Next:** Plane C external importers (`goldberg.rs`, `trophy_dir.rs`, `generic_export.rs`, `watcher.rs` strictly isolated from `evaluation/`), SQL `NULL` timestamp preservation, `SPECTATOR` non-mutation, `POST /v1/observation/import`, `POST /session/mode`, `POST /sync-now`, upgraded dark Swiss/Grid Game Health & Pack Browser UI (`http://127.0.0.1:19850`), and `onehundo-desktop` (`packs`, `mode`, `import-obs`) are verified (`tests/plane_c_isolation.rs`); next focus is Phase 4 (community `.onehundo` authoring helpers, flagship recomp & RetroArch/LaunchBox/Playnite integrations, and Ed25519 pack signature verification).
+- **Phase 3 Verified -> Phase 4 Next:** Plane C external importers (`goldberg.rs`, `trophy_dir.rs`, `longshot.rs`, `generic_export.rs`, `watcher.rs` strictly isolated from `evaluation/`), `packs/nintendo.oot.longshot.pc.onehundo`, SQL `NULL` timestamp preservation, `SPECTATOR` non-mutation, `POST /v1/observation/import`, `POST /session/mode`, `POST /sync-now`, upgraded dark Swiss/Grid Game Health & Pack Browser UI (`http://127.0.0.1:19850`), and `onehundo-desktop` (`packs`, `mode`, `import-obs`) are verified (`tests/plane_c_isolation.rs`); next focus is Phase 4 (community `.onehundo` authoring helpers, flagship recomp & RetroArch/LaunchBox/Playnite integrations, and Ed25519 pack signature verification).
 - **Verify:**
   - `cargo build --offline --bins && cargo test --offline` (or `cargo test`)
   - `cargo check --offline --all-targets`

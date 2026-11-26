@@ -5,6 +5,7 @@
 
 pub mod generic_export;
 pub mod goldberg;
+pub mod longshot;
 pub mod trophy_dir;
 pub mod watcher;
 
@@ -432,6 +433,10 @@ pub fn parse_observation_path_with_options(
             return goldberg::parse_goldberg_path(path, opts);
         }
 
+        if longshot::directory_has_longshot_saves(path) {
+            return longshot::parse_longshot_path(path, opts);
+        }
+
         // Fall back to first `*.oh-obs.json` inside directory if present
         if let Ok(rd) = fs::read_dir(path) {
             let mut obs_files: Vec<_> = rd
@@ -461,7 +466,7 @@ pub fn parse_observation_path_with_options(
         }
 
         return Err(format!(
-            "no recognized Goldberg/GSE, trophy directory, or .oh-obs.json files found in '{}'",
+            "no recognized Goldberg/GSE, trophy directory, Longshot progress.sav, or .oh-obs.json files found in '{}'",
             path.display()
         ));
     }
@@ -474,6 +479,7 @@ pub fn parse_observation_path_with_options(
 
     match fname.as_str() {
         "achievements.json" | "achievements.ini" => goldberg::parse_goldberg_path(path, opts),
+        "progress.sav" => longshot::parse_longshot_path(path, opts),
         "tropusr.dat" | "trop.xml" | "tropusr.xml" | "trop.sfm" | "tropconf.sfm"
         | "trophies.xml" | "tropusr.json" | "trophies.json" | "trophy.json" => {
             trophy_dir::parse_trophy_file(path, packs, opts)

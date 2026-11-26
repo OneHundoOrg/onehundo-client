@@ -1,5 +1,5 @@
 //! Polling directory watcher for Plane C external observation artifacts.
-//! Scans configured directories (Goldberg/GSE, RPCS3/shadPS4 trophy dirs, `.oh-obs.json`)
+//! Scans configured directories (Goldberg/GSE, RPCS3/shadPS4 trophy dirs, Longshot `progress.sav`, `.oh-obs.json`)
 //! and detects added/modified files without duplicating already-imported records.
 
 use crate::core::config::WatchedObservationDir;
@@ -40,6 +40,7 @@ fn is_watchable_observation_file(path: &Path) -> bool {
         lower.as_str(),
         "achievements.json"
             | "achievements.ini"
+            | "progress.sav"
             | "tropusr.dat"
             | "tropusr.xml"
             | "trop.xml"
