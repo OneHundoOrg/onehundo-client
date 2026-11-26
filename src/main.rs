@@ -1,6 +1,7 @@
 use onehundo_client::core::config::{save_credentials, DaemonConfig, WatchedObservationDir};
 use onehundo_client::core::engine::DaemonEngine;
 use onehundo_client::core::lockfile::{default_lock_path, InstanceLock, LockAcquireError};
+use onehundo_client::core::types::ProgressionMode;
 use onehundo_client::diagnostics::server::start_health_http_server;
 use onehundo_client::ipc::unix_socket::start_unix_ipc_server;
 use std::env;
@@ -45,6 +46,7 @@ fn print_help() {
          \t--packs-dir <path>        Additional directory to scan for .onehundo packs\n\
          \t--watch-dir <path>        Directory to watch for Plane C external observation exports\n\
          \t--watch-interval-ms <n>   Observation directory poll interval in ms (default: 5000)\n\
+         \t--mode <mode>             Initial progression mode: STANDARD, ENCORE, or SPECTATOR\n\
          \t--health-addr <addr>      Game Health HTTP bind addr (default: 127.0.0.1:19850, 'none' to disable)\n\
          \t--platform-url <url>      onehundo-platform base URL (e.g. https://api.onehundo.org)\n\
          \t--api-key <key>           Save API key into credentials.json (never logged)\n\
@@ -61,6 +63,7 @@ fn main() {
     let mut extra_packs: Vec<PathBuf> = Vec::new();
     let mut api_key_arg: Option<String> = None;
     let mut lock_file_arg: Option<PathBuf> = None;
+    let mut initial_mode: Option<ProgressionMode> = None;
     let mut health_enabled = true;
 
     let args: Vec<String> = env::args().collect();
@@ -107,6 +110,19 @@ fn main() {
                 i += 1;
                 if let Ok(ms) = args[i].parse::<u64>() {
                     cfg.watch_poll_interval_ms = ms;
+                }
+            }
+            "--mode" if i + 1 < args.len() => {
+                i += 1;
+                match ProgressionMode::from_str_strict(args[i].trim()) {
+                    Some(m) => initial_mode = Some(m),
+                    None => {
+                        eprintln!(
+                            "Invalid --mode '{}' (expected STANDARD, ENCORE, or SPECTATOR)",
+                            args[i]
+                        );
+                        std::process::exit(2);
+                    }
                 }
             }
             "--health-addr" if i + 1 < args.len() => {
@@ -167,6 +183,11 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if let Some(mode) = initial_mode {
+        let _ = engine.set_progression_mode(None, mode);
+        println!("[onehundod] Initial progression mode set to {}", mode.as_str());
+    }
 
     if let Some(key) = api_key_arg {
         let mut creds = engine.credentials.lock().unwrap();

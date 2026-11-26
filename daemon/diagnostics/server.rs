@@ -1,7 +1,9 @@
 use crate::core::engine::DaemonEngine;
 use crate::core::types::{FairPlayViolation, ProgressionMode};
+use crate::observation::external_importers::list_observation_history;
+use crate::storage::state::{list_stats, list_trophies};
 use crate::ui::game_health::render_game_health_html;
-use crate::ui::pack_browser::render_pack_browser_html;
+use crate::ui::pack_browser::render_pack_browser_with_state_html;
 use serde::Deserialize;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -177,13 +179,29 @@ fn handle_http_conn(
             Err(e) => ("500 Internal Server Error", "text/plain", e),
         },
         ("GET", "/ui/packs") => {
+            let (observations, trophies, stats) = {
+                let db = engine.db.lock().unwrap();
+                (
+                    list_observation_history(&db, 200).unwrap_or_default(),
+                    list_trophies(&db, None).unwrap_or_default(),
+                    list_stats(&db, None).unwrap_or_default(),
+                )
+            };
+            let active_mode = engine.current_progression_mode();
             let packs_guard = engine.packs.lock().unwrap();
             let list = packs_guard.list();
             let errs = packs_guard.load_errors();
             (
                 "200 OK",
                 "text/html; charset=utf-8",
-                render_pack_browser_html(&list, errs),
+                render_pack_browser_with_state_html(
+                    &list,
+                    errs,
+                    &observations,
+                    &trophies,
+                    &stats,
+                    active_mode,
+                ),
             )
         }
         ("GET", "/health") => match engine.health_snapshot() {

@@ -81,7 +81,9 @@ fn validates_oot_longshot_production_pack() {
         loaded.mapped_oap_edition.as_deref(),
         Some("nintendo-provisional-oot-switch2")
     );
-    assert_eq!(loaded.manifest.achievements.len(), 12);
+    assert_eq!(loaded.manifest.achievements.len(), 13);
+    assert_eq!(loaded.manifest.achievements[0].canonical_achievement_id, "a01");
+    assert_eq!(loaded.manifest.achievements[0].title, "It works, it works!");
 
     let mut reg = PackRegistry::new();
     reg.insert_pack(loaded);

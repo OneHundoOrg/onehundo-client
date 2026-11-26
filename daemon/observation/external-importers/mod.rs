@@ -107,6 +107,8 @@ pub struct ObservationHistoryRow {
     pub record_kind: String,
     pub key: String,
     pub unlocked: Option<bool>,
+    #[serde(default)]
+    pub int_value: Option<i64>,
     pub source_timestamp: Option<String>,
     pub observed_at: String,
     pub progression_mode: String,
@@ -533,7 +535,7 @@ pub fn list_observation_history(
     let mut stmt = conn
         .prepare(
             "SELECT observation_id, canonical_game_id, observer_id, source_type,
-                    record_kind, key, unlocked, source_timestamp, observed_at,
+                    record_kind, key, unlocked, int_value, source_timestamp, observed_at,
                     progression_mode, trust_tier, evidence_class, verification_state,
                     artifact_hash_sha256
              FROM observation_journal
@@ -553,13 +555,14 @@ pub fn list_observation_history(
                 record_kind: r.get(4)?,
                 key: r.get(5)?,
                 unlocked: unlocked_int.map(|v| v != 0),
-                source_timestamp: r.get(7)?,
-                observed_at: r.get(8)?,
-                progression_mode: r.get(9)?,
-                trust_tier: r.get(10)?,
-                evidence_class: r.get(11)?,
-                verification_state: r.get(12)?,
-                artifact_hash_sha256: r.get(13)?,
+                int_value: r.get(7)?,
+                source_timestamp: r.get(8)?,
+                observed_at: r.get(9)?,
+                progression_mode: r.get(10)?,
+                trust_tier: r.get(11)?,
+                evidence_class: r.get(12)?,
+                verification_state: r.get(13)?,
+                artifact_hash_sha256: r.get(14)?,
             })
         })
         .map_err(|e| format!("failed querying observation_journal: {}", e))?;

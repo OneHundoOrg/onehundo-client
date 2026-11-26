@@ -51,14 +51,18 @@ fn build_synthetic_tropusr_dat(entries: &[(u32, u32, u64)]) -> Vec<u8> {
 }
 
 fn build_synthetic_longshot_progress_sav(
+    intro_awakened: bool,
     skulltulas: i32,
     max_hearts_quarters: i32,
     bool64s: &[u64],
     equip_primary: Option<&str>,
 ) -> Vec<u8> {
     let mut scalars: std::collections::BTreeMap<u32, u32> = std::collections::BTreeMap::new();
-    scalars.insert(0xa779_21d7, skulltulas as u32);
-    scalars.insert(0x31ab_5580, max_hearts_quarters as u32);
+    if intro_awakened {
+        scalars.insert(0xb041_ae87, 1);
+    }
+    scalars.insert(0x0473_5978, skulltulas as u32);
+    scalars.insert(0xfbe0_1da1, max_hearts_quarters as u32);
 
     let extra_entries = 1 + usize::from(equip_primary.is_some());
     let data_off = 0x28 + (scalars.len() + extra_entries) * 8;
@@ -678,6 +682,7 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
     // 1. Watcher picks up nested progress.sav under watched root cleanly
     let sav_path = watch_dir.join("progress.sav");
     let sav_v1 = build_synthetic_longshot_progress_sav(
+        true,
         16,
         16, // 4 hearts = 3 base + 1 Deku container + 0 heart pieces
         &[0xf914_fa36_7471_a3e3],
@@ -687,7 +692,7 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
 
     let poll1 = engine.poll_watched_observation_dirs();
     assert_eq!(poll1.files_changed, 1);
-    assert_eq!(poll1.imported, 4); // a01 + skulltulas_collected + heart_pieces + bosses_defeated
+    assert_eq!(poll1.imported, 5); // a01 + a02 + skulltulas_collected + heart_pieces + bosses_defeated
 
     let poll2 = engine.poll_watched_observation_dirs();
     assert_eq!(poll2.files_changed, 0);
@@ -696,8 +701,9 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
     {
         let db = engine.db.lock().unwrap();
         let trophies = list_trophies(&db, Some("nintendo.oot.longshot.pc")).unwrap();
-        assert_eq!(trophies.len(), 1);
+        assert_eq!(trophies.len(), 2);
         assert_eq!(trophies[0].canonical_achievement_id, "a01");
+        assert_eq!(trophies[1].canonical_achievement_id, "a02");
         assert_eq!(trophies[0].evidence_class, "LOCALLY_OBSERVED");
         assert_eq!(trophies[0].verification_state, "UNVERIFIED");
 
@@ -731,7 +737,7 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(null_ts_count, 4);
+        assert_eq!(null_ts_count, 5);
     }
 
     // 2. Pack registration maps nintendo.oot.longshot.pc -> nintendo-provisional-oot-switch2
@@ -747,6 +753,7 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
     // 3. SPECTATOR mode must NOT mutate trophy_state or stat_state when updated save arrives
     engine.set_progression_mode(None, ProgressionMode::Spectator);
     let sav_v2 = build_synthetic_longshot_progress_sav(
+        true,
         100,
         24,
         &[0xf914_fa36_7471_a3e3, 0xff11_593a_2277_8e7e],
@@ -759,7 +766,7 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
     {
         let db = engine.db.lock().unwrap();
         let trophies = list_trophies(&db, Some("nintendo.oot.longshot.pc")).unwrap();
-        assert_eq!(trophies.len(), 1); // still only a01 from STANDARD
+        assert_eq!(trophies.len(), 2); // still only a01 + a02 from STANDARD
         let stats = list_stats(&db, Some("nintendo.oot.longshot.pc")).unwrap();
         assert_eq!(
             stats

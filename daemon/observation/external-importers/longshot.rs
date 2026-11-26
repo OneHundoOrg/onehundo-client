@@ -21,16 +21,21 @@ const LONGSHOT_SAVE_MAGIC: u32 = 0x0102_0304;
 const HEADER_BYTES: usize = 0x28;
 const MAX_SCAN_DEPTH: usize = 4;
 
-// Verified GameDataList hashes in Longshot `progress.sav`
-const HASH_SKULLTULAS_COLLECTED: u32 = 0xa779_21d7;
-const HASH_MAX_HEARTS: u32 = 0x31ab_5580; // Quarter-hearts (12 = 3 hearts, 80 = 20 hearts)
+// Verified MurmurHash3 (x86-32, seed 0) GameDataList hashes in Longshot `progress.sav`
+const HASH_INTRO_DEKU_NAVI: u32 = 0xb041_ae87; // HavePlayedEvent.Dm_Kokiri_0030 (Bool == 1)
+const HASH_SKULLTULAS_COLLECTED: u32 = 0x0473_5978; // PouchData.Item_Token_Gold.StockNum
+const HASH_MAX_LIFE: u32 = 0xfbe0_1da1; // PlayerStatus.MaxLife (Quarter-hearts: 12 = 3 hearts, 80 = 20 hearts)
+const HASH_HEART_PIECE_STOCK: u32 = 0x51ec_97b3; // PouchData.Obj_Heart_Piece.StockNum (0..3 remainder)
 const HASH_BOOL64_TRUE_LIST: u32 = 0xa3db_7114; // Null-terminated LE u64 array of set Bool64bitKey flags
 const HASH_DEFEATED_ENEMIES: u32 = 0x9152_eef8; // UInt64Array (u32 count + u64[])
 const HASH_CURRENT_MAP: u32 = 0x1d61_89da; // String64 (e.g. "KokiriForest_Child")
 const HASH_ALT_MAP: u32 = 0x4a6b_db7d; // String64
 const HASH_EQUIP_PRIMARY: u32 = 0xfb11_7672; // String64
 const HASH_EQUIP_SECONDARY: u32 = 0xa95a_3521; // String64
-const HASH_COMPLETE_SCALAR: u32 = 0xbb11_b275; // CRC32("Complete") fallback scalar check
+const HASH_IS_GET_MASTER_SWORD: u32 = 0x7ae3_8e5b; // IsGet.Weapon_Sword_Master (Bool == 1)
+const HASH_STOCK_MASTER_SWORD: u32 = 0xf1c4_5294; // PouchData.Weapon_Sword_Master.StockNum (Int > 0)
+const HASH_IS_GAME_CLEAR: u32 = 0xb496_2fee; // IsGameClear (Bool == 1)
+const HASH_DEFEATED_GANON: u32 = 0x6d83_4709; // DefeatedEnemyNum.Enemy_DungeonBoss_Ganon (Int > 0)
 
 // Exact `Bool64bitKey` hashes for dungeon boss Heart Containers from `Banc/*_Static.bcett.byml.zs`
 const BOOL64_DEKU_TREE_HEART: u64 = 0xf914_fa36_7471_a3e3; // Queen Gohma / Kokiri's Emerald
@@ -42,18 +47,92 @@ const BOOL64_WATER_TEMPLE_HEART: u64 = 0xc835_e1d0_3656_bf46; // Morpha / Water 
 const BOOL64_SHADOW_TEMPLE_HEART: u64 = 0xf43c_cb26_0f55_76dc; // Bongo Bongo / Shadow Medallion
 const BOOL64_SPIRIT_TEMPLE_HEART: u64 = 0x4181_1f12_5b1e_edd5; // Twinrova / Spirit Medallion
 
-// Explicit completion marker hash (Bool64 sentinel supported in binary saves)
+// Explicit completion marker hash (Bool64 sentinel supported in synthetic/legacy binary saves)
 const BOOL64_GANON_DEFEATED: u64 = 0x4741_4e4f_4e5f_434c; // "GANON_CL"
 
-const DUNGEON_HEART_ACHIEVEMENTS: &[(&str, &str, u64)] = &[
-    ("a01", "Kokiri's Emerald", BOOL64_DEKU_TREE_HEART),
-    ("a02", "Goron's Ruby", BOOL64_DODONGO_CAVERN_HEART),
-    ("a03", "Zora's Sapphire", BOOL64_JABU_JABU_HEART),
-    ("a05", "Forest Medallion", BOOL64_FOREST_TEMPLE_HEART),
-    ("a06", "Fire Medallion", BOOL64_FIRE_TEMPLE_HEART),
-    ("a07", "Water Medallion", BOOL64_WATER_TEMPLE_HEART),
-    ("a08", "Shadow Medallion", BOOL64_SHADOW_TEMPLE_HEART),
-    ("a09", "Spirit Medallion", BOOL64_SPIRIT_TEMPLE_HEART),
+struct DungeonMilestoneRule {
+    ach_id: &'static str,
+    title: &'static str,
+    is_adult_medallion: bool,
+    bool64_heart: u64,
+    is_get_item: u32,
+    stock_item: u32,
+    defeated_boss: u32,
+}
+
+const DUNGEON_MILESTONES: &[DungeonMilestoneRule] = &[
+    DungeonMilestoneRule {
+        ach_id: "a02",
+        title: "Kokiri's Emerald",
+        is_adult_medallion: false,
+        bool64_heart: BOOL64_DEKU_TREE_HEART,
+        is_get_item: 0x110b_83ec,   // IsGet.Item_Stone_Forest
+        stock_item: 0xcbd1_e58c,    // PouchData.Item_Stone_Forest.StockNum
+        defeated_boss: 0xee85_0ad3, // DefeatedEnemyNum.Enemy_DungeonBoss_Gohma
+    },
+    DungeonMilestoneRule {
+        ach_id: "a03",
+        title: "Goron's Ruby",
+        is_adult_medallion: false,
+        bool64_heart: BOOL64_DODONGO_CAVERN_HEART,
+        is_get_item: 0x8908_d6ad,   // IsGet.Item_Stone_Fire
+        stock_item: 0x7d69_ad47,    // PouchData.Item_Stone_Fire.StockNum
+        defeated_boss: 0x1da4_58d0, // DefeatedEnemyNum.Enemy_DungeonBoss_Dodongo
+    },
+    DungeonMilestoneRule {
+        ach_id: "a04",
+        title: "Zora's Sapphire",
+        is_adult_medallion: false,
+        bool64_heart: BOOL64_JABU_JABU_HEART,
+        is_get_item: 0xeec3_83f5,   // IsGet.Item_Stone_Water
+        stock_item: 0xb8e3_bf45,    // PouchData.Item_Stone_Water.StockNum
+        defeated_boss: 0x7253_79e3, // DefeatedEnemyNum.Enemy_DungeonBoss_Barinade
+    },
+    DungeonMilestoneRule {
+        ach_id: "a06",
+        title: "Forest Medallion",
+        is_adult_medallion: true,
+        bool64_heart: BOOL64_FOREST_TEMPLE_HEART,
+        is_get_item: 0xfcd8_d653,   // IsGet.Item_Medal_Forest
+        stock_item: 0x692d_57cb,    // PouchData.Item_Medal_Forest.StockNum
+        defeated_boss: 0xc917_5b2a, // DefeatedEnemyNum.Enemy_DungeonBoss_PhantomGanon
+    },
+    DungeonMilestoneRule {
+        ach_id: "a07",
+        title: "Fire Medallion",
+        is_adult_medallion: true,
+        bool64_heart: BOOL64_FIRE_TEMPLE_HEART,
+        is_get_item: 0x103a_0dc7,   // IsGet.Item_Medal_Fire
+        stock_item: 0x5ce2_54a6,    // PouchData.Item_Medal_Fire.StockNum
+        defeated_boss: 0xf6bb_b871, // DefeatedEnemyNum.Enemy_DungeonBoss_Volvagia
+    },
+    DungeonMilestoneRule {
+        ach_id: "a08",
+        title: "Water Medallion",
+        is_adult_medallion: true,
+        bool64_heart: BOOL64_WATER_TEMPLE_HEART,
+        is_get_item: 0xcf64_e780,   // IsGet.Item_Medal_Water
+        stock_item: 0x0151_a68f,    // PouchData.Item_Medal_Water.StockNum
+        defeated_boss: 0x8846_1890, // DefeatedEnemyNum.Enemy_DungeonBoss_Morpha
+    },
+    DungeonMilestoneRule {
+        ach_id: "a09",
+        title: "Shadow Medallion",
+        is_adult_medallion: true,
+        bool64_heart: BOOL64_SHADOW_TEMPLE_HEART,
+        is_get_item: 0x12d6_3ac6,   // IsGet.Item_Medal_Shadow
+        stock_item: 0x204d_2063,    // PouchData.Item_Medal_Shadow.StockNum
+        defeated_boss: 0xb439_6bb4, // DefeatedEnemyNum.Enemy_DungeonBoss_BongoBongo
+    },
+    DungeonMilestoneRule {
+        ach_id: "a10",
+        title: "Spirit Medallion",
+        is_adult_medallion: true,
+        bool64_heart: BOOL64_SPIRIT_TEMPLE_HEART,
+        is_get_item: 0xe269_df38,   // IsGet.Item_Medal_Spirit
+        stock_item: 0x0c7a_5fd0,    // PouchData.Item_Medal_Spirit.StockNum
+        defeated_boss: 0x76eb_9d9e, // DefeatedEnemyNum.Enemy_DungeonBoss_Twinrova
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -64,6 +143,7 @@ pub struct ParsedLongshotSave {
     pub bosses_defeated: i64,
     pub max_hearts_quarters: i32,
     pub dungeon_containers_taken: usize,
+    pub intro_awakened: bool,
     pub ganon_defeated: bool,
     pub master_sword: bool,
 }
@@ -160,11 +240,16 @@ pub fn parse_longshot_save_bytes(bytes: &[u8]) -> Result<ParsedLongshotSave, Str
         .unwrap_or(0)
         .max(0);
     let max_hearts_quarters = entries
-        .get(&HASH_MAX_HEARTS)
+        .get(&HASH_MAX_LIFE)
         .copied()
         .map(|v| v as i32)
         .unwrap_or(12)
         .max(0);
+    let heart_piece_remainder = entries
+        .get(&HASH_HEART_PIECE_STOCK)
+        .copied()
+        .map(|v| (v as i32) & 3)
+        .unwrap_or(0);
 
     // Parse Null-terminated u64 Bool64bitKey list at HASH_BOOL64_TRUE_LIST
     let mut bool64_flags = HashSet::new();
@@ -181,7 +266,7 @@ pub fn parse_longshot_save_bytes(bytes: &[u8]) -> Result<ParsedLongshotSave, Str
         }
     }
 
-    // Parse UInt64Array at HASH_DEFEATED_ENEMIES
+    // Parse UInt64Array at HASH_DEFEATED_ENEMIES (kept for backwards compatibility)
     let mut defeated_enemy_hashes = HashSet::new();
     if let Some(&enemy_off_u32) = entries.get(&HASH_DEFEATED_ENEMIES) {
         let enemy_off = enemy_off_u32 as usize;
@@ -221,74 +306,103 @@ pub fn parse_longshot_save_bytes(bytes: &[u8]) -> Result<ParsedLongshotSave, Str
         });
 
     let mut unlocked_achievements: Vec<(&'static str, &'static str)> = Vec::new();
+
+    // a01: "It works, it works!" — Deku Tree / Navi opening cutscene completed
+    let intro_awakened = entries.get(&HASH_INTRO_DEKU_NAVI).copied().unwrap_or(0) != 0;
+    if intro_awakened {
+        unlocked_achievements.push(("a01", "It works, it works!"));
+    }
+
+    let mut dungeon_bosses_cleared = 0usize;
     let mut dungeon_containers_taken = 0usize;
     let mut adult_medallions_count = 0usize;
 
-    for &(ach_id, title, flag_hash) in DUNGEON_HEART_ACHIEVEMENTS {
-        if bool64_flags.contains(&flag_hash) {
+    for rule in DUNGEON_MILESTONES {
+        let heart_taken = bool64_flags.contains(&rule.bool64_heart);
+        if heart_taken {
             dungeon_containers_taken += 1;
-            if matches!(ach_id, "a05" | "a06" | "a07" | "a08" | "a09") {
+        }
+        let boss_killed = entries.get(&rule.defeated_boss).copied().unwrap_or(0) as i32 > 0;
+        let relic_obtained = entries.get(&rule.is_get_item).copied().unwrap_or(0) != 0
+            || entries.get(&rule.stock_item).copied().unwrap_or(0) as i32 > 0;
+
+        if heart_taken || boss_killed || relic_obtained {
+            dungeon_bosses_cleared += 1;
+            if rule.is_adult_medallion {
                 adult_medallions_count += 1;
             }
-            unlocked_achievements.push((ach_id, title));
+            unlocked_achievements.push((rule.ach_id, rule.title));
         }
     }
 
-    let has_master_sword_str = tail_strings.iter().any(|s| {
-        s == "Weapon_Sword_Master" || s == "Item_Sword_Master" || s == "Weapon_Sword_Biggoron"
-    }) || [HASH_EQUIP_PRIMARY, HASH_EQUIP_SECONDARY]
+    let has_master_sword_flag = entries
+        .get(&HASH_IS_GET_MASTER_SWORD)
+        .copied()
+        .unwrap_or(0)
+        != 0
+        || entries
+            .get(&HASH_STOCK_MASTER_SWORD)
+            .copied()
+            .unwrap_or(0) as i32
+            > 0;
+    let has_master_sword_str = tail_strings
         .iter()
-        .filter_map(|k| entries.get(k))
-        .filter_map(|&o| {
-            let o = o as usize;
-            if o >= data_off {
-                read_cstr_64(bytes, o)
-            } else {
-                None
-            }
-        })
-        .any(|s| s == "Weapon_Sword_Master" || s == "Item_Sword_Master");
+        .any(|s| s == "Weapon_Sword_Master" || s == "Item_Sword_Master")
+        || [HASH_EQUIP_PRIMARY, HASH_EQUIP_SECONDARY]
+            .iter()
+            .filter_map(|k| entries.get(k))
+            .filter_map(|&o| {
+                let o = o as usize;
+                if o >= data_off {
+                    read_cstr_64(bytes, o)
+                } else {
+                    None
+                }
+            })
+            .any(|s| s == "Weapon_Sword_Master" || s == "Item_Sword_Master");
 
     // Pulling the Master Sword is required for Adult Temple progression in vanilla OoT.
-    let master_sword = has_master_sword_str || adult_medallions_count > 0;
+    let master_sword =
+        has_master_sword_flag || has_master_sword_str || adult_medallions_count > 0;
     if master_sword {
-        unlocked_achievements.push(("a04", "Master Sword"));
+        unlocked_achievements.push(("a05", "Master Sword"));
     }
 
     let in_final_battle = matches!(
         current_map.as_deref(),
         Some("FinalBattleField") | Some("CrumblingGanonCastle")
     );
-    let ganon_defeated = bool64_flags.contains(&BOOL64_GANON_DEFEATED)
+    let ganon_defeated = entries.get(&HASH_IS_GAME_CLEAR).copied().unwrap_or(0) != 0
+        || entries.get(&HASH_DEFEATED_GANON).copied().unwrap_or(0) as i32 > 0
+        || bool64_flags.contains(&BOOL64_GANON_DEFEATED)
         || defeated_enemy_hashes.contains(&BOOL64_GANON_DEFEATED)
-        || entries.get(&HASH_COMPLETE_SCALAR).copied().unwrap_or(0) != 0
         || tail_strings
             .iter()
             .any(|s| s == "Ganon_Defeated" || s == "GameClear")
         || (adult_medallions_count == 5 && in_final_battle);
 
     if ganon_defeated {
-        unlocked_achievements.push(("a10", "Ganon Defeated"));
+        unlocked_achievements.push(("a11", "Ganon Defeated"));
     }
 
     if skulltulas_raw >= 100 {
-        unlocked_achievements.push(("a11", "100 Gold Skulltulas"));
+        unlocked_achievements.push(("a12", "100 Gold Skulltulas"));
     }
 
     if max_hearts_quarters >= 80 {
-        unlocked_achievements.push(("a12", "All Heart Containers"));
+        unlocked_achievements.push(("a13", "All Heart Containers"));
     }
 
-    // Sort canonically a01..a12
+    // Sort canonically a01..a13
     unlocked_achievements.sort_by_key(|(id, _)| *id);
 
-    // Heart Pieces formula derived from total hearts:
-    // total_hearts = starting 3 + dungeon containers (0..=8) + pieces / 4.
+    // Heart Pieces formula derived from MaxLife quarter-hearts + loose piece stock:
+    // total_hearts = starting 3 + taken dungeon boss containers (0..=8) + pieces / 4.
     let total_whole_hearts = (max_hearts_quarters / 4).max(0);
     let non_dungeon_extra_hearts =
         total_whole_hearts.saturating_sub(3 + dungeon_containers_taken as i32);
-    let heart_pieces = (non_dungeon_extra_hearts * 4).clamp(0, 36) as i64;
-    let bosses_defeated = (dungeon_containers_taken + usize::from(ganon_defeated)) as i64;
+    let heart_pieces = ((non_dungeon_extra_hearts * 4) + heart_piece_remainder).clamp(0, 36) as i64;
+    let bosses_defeated = (dungeon_bosses_cleared + usize::from(ganon_defeated)) as i64;
 
     Ok(ParsedLongshotSave {
         unlocked_achievements,
@@ -297,6 +411,7 @@ pub fn parse_longshot_save_bytes(bytes: &[u8]) -> Result<ParsedLongshotSave, Str
         bosses_defeated,
         max_hearts_quarters,
         dungeon_containers_taken,
+        intro_awakened,
         ganon_defeated,
         master_sword,
     })
@@ -409,7 +524,7 @@ pub fn parse_longshot_path(
         .expect("non-empty save_files checked");
 
     let mut records = Vec::new();
-    let total_milestones = 12usize;
+    let total_milestones = 13usize;
     let skipped_locked = total_milestones.saturating_sub(union_unlocks.len());
 
     for (ach_id, (title, artifact_hash, src_file)) in union_unlocks {
@@ -506,12 +621,16 @@ mod tests {
         skulltulas: i32,
         max_hearts_quarters: i32,
         bool64s: &[u64],
+        extra_scalars: &[(u32, u32)],
         equip_primary: Option<&str>,
         current_map: Option<&str>,
     ) -> Vec<u8> {
         let mut scalars: TestMap<u32, u32> = TestMap::new();
         scalars.insert(HASH_SKULLTULAS_COLLECTED, skulltulas as u32);
-        scalars.insert(HASH_MAX_HEARTS, max_hearts_quarters as u32);
+        scalars.insert(HASH_MAX_LIFE, max_hearts_quarters as u32);
+        for &(k, v) in extra_scalars {
+            scalars.insert(k, v);
+        }
 
         // Build tail blobs after 8-byte-aligned entry table
         let extra_entries = 1
@@ -577,17 +696,21 @@ mod tests {
                 BOOL64_WATER_TEMPLE_HEART,
                 BOOL64_SHADOW_TEMPLE_HEART,
                 BOOL64_SPIRIT_TEMPLE_HEART,
-                BOOL64_GANON_DEFEATED,
             ],
-            Some("Weapon_Sword_Master"),
-            Some("FinalBattleField"),
+            &[
+                (HASH_INTRO_DEKU_NAVI, 1),
+                (HASH_IS_GET_MASTER_SWORD, 1),
+                (HASH_IS_GAME_CLEAR, 1),
+            ],
+            Some("Weapon_Sword_Biggoron"),
+            Some("KokiriForest_Child"),
         );
 
         let parsed = parse_longshot_save_bytes(&bytes).expect("parse synthetic save");
         let ids: Vec<&str> = parsed.unlocked_achievements.iter().map(|(id, _)| *id).collect();
         assert_eq!(
             ids,
-            vec!["a01", "a04", "a05", "a06", "a07", "a08", "a09", "a10", "a11", "a12"]
+            vec!["a01", "a02", "a05", "a06", "a07", "a08", "a09", "a10", "a11", "a12", "a13"]
         );
         assert_eq!(parsed.skulltulas_collected, 100);
         // 20 total hearts - 3 base - 6 dungeon boss heart containers = 11 heart containers from pieces => clamp(44, 0..=36) = 36
@@ -613,5 +736,58 @@ mod tests {
         }));
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parses_real_100_percent_and_early_game_hash_layouts() {
+        let full_save = build_synthetic_longshot_save(
+            100,
+            80,
+            &[
+                BOOL64_DEKU_TREE_HEART,
+                BOOL64_DODONGO_CAVERN_HEART,
+                BOOL64_JABU_JABU_HEART,
+                BOOL64_FOREST_TEMPLE_HEART,
+                BOOL64_FIRE_TEMPLE_HEART,
+                BOOL64_WATER_TEMPLE_HEART,
+                BOOL64_SHADOW_TEMPLE_HEART,
+                BOOL64_SPIRIT_TEMPLE_HEART,
+            ],
+            &[
+                (HASH_INTRO_DEKU_NAVI, 1),
+                (HASH_IS_GET_MASTER_SWORD, 1),
+                (HASH_STOCK_MASTER_SWORD, 1),
+                (HASH_IS_GAME_CLEAR, 1),
+                (HASH_DEFEATED_GANON, 1),
+            ],
+            None,
+            None,
+        );
+        let full = parse_longshot_save_bytes(&full_save).unwrap();
+        assert_eq!(full.unlocked_achievements.len(), 13);
+        assert_eq!(full.unlocked_achievements[0], ("a01", "It works, it works!"));
+        assert_eq!(full.unlocked_achievements[12], ("a13", "All Heart Containers"));
+        assert_eq!(full.skulltulas_collected, 100);
+        assert_eq!(full.heart_pieces, 36);
+        assert_eq!(full.bosses_defeated, 9);
+
+        // Early game with 40 rupees (NOT Skulltulas) + 12 quarter-hearts + Dm_Kokiri_0030 complete
+        let early_save = build_synthetic_longshot_save(
+            0,
+            12,
+            &[],
+            &[
+                (HASH_INTRO_DEKU_NAVI, 1),
+                (0xa779_21d7, 40), // PlayerStatus.CurrentRupee must NOT leak into skulltulas_collected
+                (0x31ab_5580, 62), // PlayerStatus.Life must NOT count as MaxLife
+            ],
+            None,
+            None,
+        );
+        let early = parse_longshot_save_bytes(&early_save).unwrap();
+        assert_eq!(early.unlocked_achievements, vec![("a01", "It works, it works!")]);
+        assert_eq!(early.skulltulas_collected, 0);
+        assert_eq!(early.heart_pieces, 0);
+        assert_eq!(early.bosses_defeated, 0);
     }
 }
