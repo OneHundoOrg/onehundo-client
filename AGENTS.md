@@ -70,7 +70,7 @@
 - `daemon/packs/`: `.onehundo` (provisional) pack discovery, archive/schema validation (enforcing zip-slip/symlink/size safety), SHA-256 + OAP edition summaries, and deterministic matcher precedence.
 - `daemon/evaluation/memory-arena/`: Plane A memory-arena / `rcheevos` evaluator, save-state progress serialization, reset hooks, and `FRAME_GAP` tracking.
 - `daemon/evaluation/semantic-events/`: Plane B stat accumulators, thresholds, and direct unlock evaluation.
-- `daemon/observation/external-importers/`: Plane C passive Goldberg/GSE, RPCS3/shadPS4 trophy dir, Longshot binary save (`longshot.rs`), and `ObservationRecord`/save-export importers + directory watcher (strictly isolated from `evaluation/`).
+- `daemon/observation/external-importers/`: Plane C passive Goldberg/GSE, RPCS3/shadPS4 trophy dir, Longshot binary save (`longshot.rs`, including Launcher 2 `~/.local/share/longshot/launcher/profiles/<profile>/saves/{save,save-work}/<uid>/slot_XX/progress.sav`), and `ObservationRecord`/save-export importers + directory watcher (`MAX_SCAN_DEPTH = 8`, strictly isolated from `evaluation/`).
 - `daemon/sync/`: Background HTTP batch sync client targeting `onehundo-platform` (`/v1/devices/register`, `/v1/packs/resolve`, `/v1/sync/events`).
 - `daemon/diagnostics/`: `Game Health` control center & status API (`http://127.0.0.1:19850/`, `/ui/packs`, `/health`, `/packs`, `/sync-now`, `/session/mode`, `/v1/observation/import`, `/shutdown`).
 - `integrations/`: Opt-in integration adapters (`emulators/` including `plane_a_emulator_harness.c`, `static-recompilations/`, `native-ports/` including `bbport_live_demo.c` and `onehundo_quick.h`, `pc-games/`, and Windows `launchbox/`).

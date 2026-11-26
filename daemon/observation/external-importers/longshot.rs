@@ -19,7 +19,7 @@ use std::time::UNIX_EPOCH;
 pub const DEFAULT_CANONICAL_GAME_ID: &str = "nintendo.oot.longshot.pc";
 const LONGSHOT_SAVE_MAGIC: u32 = 0x0102_0304;
 const HEADER_BYTES: usize = 0x28;
-const MAX_SCAN_DEPTH: usize = 4;
+const MAX_SCAN_DEPTH: usize = 8;
 
 // Verified MurmurHash3 (x86-32, seed 0) GameDataList hashes in Longshot `progress.sav`
 const HASH_INTRO_DEKU_NAVI: u32 = 0xb041_ae87; // HavePlayedEvent.Dm_Kokiri_0030 (Bool == 1)
@@ -789,5 +789,38 @@ mod tests {
         assert_eq!(early.skulltulas_collected, 0);
         assert_eq!(early.heart_pieces, 0);
         assert_eq!(early.bosses_defeated, 0);
+    }
+
+    #[test]
+    fn parses_launcher_v2_nested_profile_directory() {
+        let base = std::env::temp_dir().join(format!(
+            "onehundo_longshot_l2_{}",
+            crate::core::config::generate_uuid_v4()
+        ));
+        let slot_dir = base
+            .join("default")
+            .join("saves")
+            .join("save")
+            .join("5a3c9e1f0b7d24680000000000000001")
+            .join("slot_00");
+        fs::create_dir_all(&slot_dir).unwrap();
+        let bytes = build_synthetic_longshot_save(
+            0,
+            12,
+            &[],
+            &[(HASH_INTRO_DEKU_NAVI, 1)],
+            None,
+            None,
+        );
+        fs::write(slot_dir.join("progress.sav"), &bytes).unwrap();
+
+        assert!(directory_has_longshot_saves(&base));
+        let res = parse_longshot_path(&base, &ImportOptions::default()).unwrap();
+        assert!(res
+            .records
+            .iter()
+            .any(|r| r.record_kind == "ACHIEVEMENT_EVIDENCE" && r.key == "a01" && r.unlocked == Some(true)));
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

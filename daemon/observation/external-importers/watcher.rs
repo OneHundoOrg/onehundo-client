@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-const MAX_SCAN_DEPTH: usize = 4;
+const MAX_SCAN_DEPTH: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FileStamp {
@@ -125,5 +125,49 @@ impl DirectoryWatcherState {
         }
 
         (total_scanned, changed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn discovers_launcher_v2_nested_longshot_saves() {
+        let base = std::env::temp_dir().join(format!(
+            "onehundo_watcher_l2_{}",
+            crate::core::config::generate_uuid_v4()
+        ));
+        let save_slot = base
+            .join("default")
+            .join("saves")
+            .join("save")
+            .join("5a3c9e1f0b7d24680000000000000001")
+            .join("slot_00");
+        let work_slot = base
+            .join("default")
+            .join("saves")
+            .join("save-work")
+            .join("5a3c9e1f0b7d24680000000000000001")
+            .join("slot_01");
+        fs::create_dir_all(&save_slot).unwrap();
+        fs::create_dir_all(&work_slot).unwrap();
+        let p1 = save_slot.join("progress.sav");
+        let p2 = work_slot.join("progress.sav");
+        fs::write(&p1, b"stub").unwrap();
+        fs::write(&p2, b"stub").unwrap();
+
+        let mut watcher = DirectoryWatcherState::new();
+        let watched = vec![WatchedObservationDir {
+            path: base.clone(),
+            canonical_game_id: Some("nintendo.oot.longshot.pc".to_string()),
+        }];
+        let (scanned, changed) = watcher.collect_changed_targets(&watched);
+        assert_eq!(scanned, 2);
+        assert_eq!(changed.len(), 2);
+        assert!(changed.iter().any(|(p, _)| p == &p1));
+        assert!(changed.iter().any(|(p, _)| p == &p2));
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
