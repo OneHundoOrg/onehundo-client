@@ -255,12 +255,37 @@ pub fn save_credentials(config_dir: &Path, creds: &Credentials) -> Result<(), St
         .map_err(|e| format!("failed to create config dir '{}': {}", config_dir.display(), e))?;
     let path = config_dir.join("credentials.json");
     let json = serde_json::to_string_pretty(creds).map_err(|e| e.to_string())?;
-    fs::write(&path, json)
-        .map_err(|e| format!("failed to write credentials '{}': {}", path.display(), e))?;
+    write_secret_file(&path, json.as_bytes())
+        .map_err(|e| format!("failed to write credentials '{}': {}", path.display(), e))
+}
+
+/// Writes a secret (API key, device token) so it is never readable by others, even briefly: the
+/// bytes go to a sibling temp file created `0600` from the start, which then atomically replaces
+/// `path`. A pre-existing world-readable file is replaced, not rewritten in place.
+pub fn write_secret_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("secret");
+    let tmp = path.with_file_name(format!(".{}.{}.tmp", file_name, std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&path, fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    Ok(())
+    let result = (|| {
+        let mut file = options.open(&tmp)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }

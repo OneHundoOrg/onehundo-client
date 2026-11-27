@@ -49,6 +49,86 @@ struct NotifyTestReq {
     body: Option<String>,
 }
 
+/// Header value for `name` in a raw request head (case-insensitive), first occurrence.
+fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
+    head.lines().skip(1).find_map(|l| {
+        let (k, v) = l.split_once(':')?;
+        if k.trim().eq_ignore_ascii_case(name) {
+            Some(v.trim())
+        } else {
+            None
+        }
+    })
+}
+
+/// Splits `host[:port]` (including bracketed IPv6 `[::1]:19850`) into host and optional port.
+fn split_host_port(value: &str) -> Option<(&str, Option<&str>)> {
+    if let Some(rest) = value.strip_prefix('[') {
+        let end = rest.find(']')?;
+        let host = &value[..end + 2];
+        let after = &rest[end + 1..];
+        return match after.strip_prefix(':') {
+            Some(port) => Some((host, Some(port))),
+            None if after.is_empty() => Some((host, None)),
+            None => None,
+        };
+    }
+    match value.rsplit_once(':') {
+        Some((h, p)) if !h.contains(':') => Some((h, Some(p))),
+        Some(_) => None,
+        None => Some((value, None)),
+    }
+}
+
+/// Host names the Game Health server answers to: loopback names, plus the exact address it is
+/// bound to when that is a specific (non-wildcard) IP.
+fn host_allowed(host: &str, bound: SocketAddr) -> bool {
+    let host = host.to_ascii_lowercase();
+    if host == "localhost" || host == "127.0.0.1" || host == "[::1]" {
+        return true;
+    }
+    let ip = bound.ip();
+    if ip.is_unspecified() {
+        return false;
+    }
+    let bound_host = match ip {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => format!("[{}]", v6),
+    };
+    host == bound_host
+}
+
+/// Defends the loopback control API against cross-origin browser requests and DNS rebinding:
+/// - `Host` must be present and name a loopback host (or the specific bound IP), so a page served
+///   from an attacker's domain that re-resolves to 127.0.0.1 is refused.
+/// - `Origin`, when sent (browsers always send it on cross-origin and on POST), must be exactly
+///   `http://<allowed host>:<bound port>`: another site, another local port, or `null` is refused.
+/// - `Sec-Fetch-Site: cross-site` is refused outright.
+/// CLI clients (`onehundo-desktop`, curl) send `Host` and no `Origin`, and are unaffected.
+pub fn local_request_allowed(head: &str, bound: SocketAddr) -> Result<(), &'static str> {
+    let host = header_value(head, "host").ok_or("missing Host header")?;
+    let (host_name, _) = split_host_port(host).ok_or("malformed Host header")?;
+    if !host_allowed(host_name, bound) {
+        return Err("Host is not a loopback address");
+    }
+    if let Some(site) = header_value(head, "sec-fetch-site") {
+        if site.eq_ignore_ascii_case("cross-site") {
+            return Err("cross-site request refused");
+        }
+    }
+    if let Some(origin) = header_value(head, "origin") {
+        let rest = origin
+            .strip_prefix("http://")
+            .ok_or("cross-origin request refused")?;
+        let (o_host, o_port) = split_host_port(rest).ok_or("cross-origin request refused")?;
+        let port_ok = o_port.and_then(|p| p.parse::<u16>().ok()) == Some(bound.port());
+        if !port_ok || !host_allowed(o_host, bound) {
+            return Err("cross-origin request refused");
+        }
+    }
+    Ok(())
+}
+
 pub fn start_health_http_server(
     engine: Arc<DaemonEngine>,
     bind_addr: &str,
@@ -69,7 +149,7 @@ pub fn start_health_http_server(
                 Ok((stream, _)) => {
                     let eng = Arc::clone(&engine);
                     let sd = Arc::clone(&shutdown);
-                    thread::spawn(move || handle_http_conn(stream, eng, sd));
+                    thread::spawn(move || handle_http_conn(stream, eng, sd, local_addr));
                 }
                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                     thread::sleep(Duration::from_millis(25));
@@ -136,10 +216,24 @@ fn handle_observation_import_http(
     }
 }
 
+fn write_response(stream: &mut TcpStream, status: &str, ctype: &str, body: &str) {
+    // nosniff + no framing: the control center's buttons can't be clickjacked from another page.
+    let header = format!(
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nX-Frame-Options: DENY\r\nContent-Security-Policy: frame-ancestors 'none'\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
+        status,
+        ctype,
+        body.len()
+    );
+    let _ = stream.write_all(header.as_bytes());
+    let _ = stream.write_all(body.as_bytes());
+    let _ = stream.flush();
+}
+
 fn handle_http_conn(
     mut stream: TcpStream,
     engine: Arc<DaemonEngine>,
     shutdown: Arc<AtomicBool>,
+    bound: SocketAddr,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
     let mut buf = vec![0u8; 64 * 1024];
@@ -158,6 +252,16 @@ fn handle_http_conn(
     let method = parts.next().unwrap_or("GET");
     let raw_path = parts.next().unwrap_or("/");
     let path = raw_path.split('?').next().unwrap_or("/");
+
+    if let Err(reason) = local_request_allowed(head, bound) {
+        write_response(
+            &mut stream,
+            "403 Forbidden",
+            "application/json; charset=utf-8",
+            &serde_json::json!({ "error": reason }).to_string(),
+        );
+        return;
+    }
 
     // Read remaining content-length if POST
     let mut full_body = body_part.to_string();
@@ -364,15 +468,7 @@ fn handle_http_conn(
         ),
     };
 
-    let header = format!(
-        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
-        status,
-        ctype,
-        resp_body.len()
-    );
-    let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(resp_body.as_bytes());
-    let _ = stream.flush();
+    write_response(&mut stream, status, ctype, &resp_body);
     if trigger_shutdown {
         shutdown.store(true, Ordering::SeqCst);
     }

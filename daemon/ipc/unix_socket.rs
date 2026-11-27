@@ -114,6 +114,9 @@ pub fn start_unix_ipc_server(
 
     let listener = UnixListener::bind(socket_path)
         .map_err(|e| format!("failed binding Unix socket '{}': {}", socket_path.display(), e))?;
+    // Owner-only, whatever the umask: connecting needs write permission on the socket file, so
+    // other local users (notably under the shared /tmp fallback) can't submit events or read state.
+    restrict_socket_permissions(socket_path)?;
     listener
         .set_nonblocking(true)
         .map_err(|e| format!("failed setting nonblocking on UnixListener: {}", e))?;
@@ -135,6 +138,19 @@ pub fn start_unix_ipc_server(
     });
 
     Ok(handle)
+}
+
+/// Sets the bound socket file to `0600`. Fails closed: a socket we can't restrict isn't served.
+pub fn restrict_socket_permissions(socket_path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(socket_path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+        let _ = fs::remove_file(socket_path);
+        format!(
+            "failed restricting Unix socket '{}' to 0600: {}",
+            socket_path.display(),
+            e
+        )
+    })
 }
 
 fn handle_ipc_client(

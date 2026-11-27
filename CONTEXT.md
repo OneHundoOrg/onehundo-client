@@ -39,6 +39,7 @@
 
 ### Target Modules
 - **Pack Security & Verification (`daemon/packs/`):** Ed25519 signature verification (`signature_key_id` + `pack_sha256`), remote `GET /v1/packs/resolve` auto-download/cache, and `COMPETITIVE` reproducible-build/frame-gap checks.
+- **Local attack-surface hardening (2026-11-27, `tests/security_hardening.rs`):** the `127.0.0.1:19850` API refuses requests whose `Host` isn't loopback or whose `Origin` isn't `http://<loopback>:<bound port>` (DNS rebinding / cross-site CSRF → 403) and sends anti-framing headers; the IPC socket is `0600` regardless of umask; `credentials.json` is written `0600` atomically (`write_secret_file`). Integrations calling the API from a browser context must be served from the daemon's own origin.
 - **Creator & Frontend Integrations (`integrations/`, `daemon/diagnostics/server.rs`, `apps/desktop/main.rs`):** Save-diff & named-state authoring helpers, libretro/RetroArch Plane A bridge, and LaunchBox / Playnite read-only shelf polling against `127.0.0.1:19850`.
 
 ### Hard Boundaries
