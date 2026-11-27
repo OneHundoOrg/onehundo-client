@@ -1,4 +1,6 @@
-use crate::ui::desktop::theme::TRAY_ICON_PNG;
+use crate::ui::desktop::theme::{
+    TRAY_ICON_IDLE_PNG, TRAY_ICON_PAUSED_PNG, TRAY_ICON_SIGNIN_PNG, TRAY_ICON_TRACKING_PNG,
+};
 use eframe::egui;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -30,6 +32,19 @@ impl TrayStatus {
     }
 }
 
+/// Visual icon state for the OS system tray stripe:
+/// - `ActiveGame`: vivid Teal stripe when a supported game is detected and actively tracked
+/// - `Paused`: Warning Orange stripe when tracking is paused
+/// - `SignInNeeded`: Neutral slate stripe + Coral badge when standing by locally (not signed in)
+/// - `Idle`: Neutral slate stripe when standing by waiting for a game
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrayVisualState {
+    Idle,
+    ActiveGame,
+    Paused,
+    SignInNeeded,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
     OpenWindow,
@@ -47,6 +62,7 @@ pub struct TrayModel {
     pub window_visible: bool,
     pub quit_requested: bool,
     pub active_game_label: Option<String>,
+    pub active_tracking_detail: Option<String>,
 }
 
 impl TrayModel {
@@ -59,6 +75,7 @@ impl TrayModel {
             window_visible,
             quit_requested: false,
             active_game_label: None,
+            active_tracking_detail: None,
         }
     }
 
@@ -74,6 +91,30 @@ impl TrayModel {
         self.launch_at_login = launch_at_login;
         self.status = TrayStatus::derive(paused, signed_in);
         self.active_game_label = active_game_label;
+    }
+
+    pub fn sync_state(
+        &mut self,
+        paused: bool,
+        signed_in: bool,
+        launch_at_login: bool,
+        active_game_label: Option<String>,
+        active_tracking_detail: Option<String>,
+    ) {
+        self.sync_flags(paused, signed_in, launch_at_login, active_game_label);
+        self.active_tracking_detail = active_tracking_detail;
+    }
+
+    pub fn visual_state(&self) -> TrayVisualState {
+        if self.paused {
+            TrayVisualState::Paused
+        } else if self.active_game_label.is_some() {
+            TrayVisualState::ActiveGame
+        } else if !self.signed_in {
+            TrayVisualState::SignInNeeded
+        } else {
+            TrayVisualState::Idle
+        }
     }
 
     /// Returns `true` when the native window should actually terminate, or `false` when
@@ -97,9 +138,49 @@ impl TrayModel {
     }
 
     pub fn tooltip_summary(&self) -> String {
-        match (&self.active_game_label, self.status) {
-            (Some(game), TrayStatus::TrackingActive) => format!("OneHundo — Tracking {}", game),
-            (_, status) => format!("OneHundo — {}", status.label()),
+        match (self.visual_state(), &self.active_game_label) {
+            (TrayVisualState::ActiveGame, Some(game)) => {
+                format!("OneHundo — Tracking {}", game)
+            }
+            (TrayVisualState::Paused, _) => "OneHundo — Paused".to_string(),
+            (TrayVisualState::SignInNeeded, _) => {
+                "OneHundo — Standing by (Local Mode)".to_string()
+            }
+            (TrayVisualState::Idle, _) => "OneHundo — Standing by for games".to_string(),
+            (_, _) => format!("OneHundo — {}", self.status.label()),
+        }
+    }
+
+    pub fn tooltip_detail(&self) -> String {
+        match (self.visual_state(), &self.active_game_label, &self.active_tracking_detail) {
+            (TrayVisualState::ActiveGame, Some(game), Some(detail)) => {
+                format!("Actively tracking {} ({})", game, detail)
+            }
+            (TrayVisualState::ActiveGame, Some(game), None) => {
+                format!("Actively tracking {}", game)
+            }
+            (TrayVisualState::Paused, _, _) => {
+                "Achievement tracking is paused".to_string()
+            }
+            (TrayVisualState::SignInNeeded, _, _) => {
+                "Watching running games & save folders • Sign in to sync".to_string()
+            }
+            (TrayVisualState::Idle, _, _) => {
+                "Watching running games & save folders automatically".to_string()
+            }
+            _ => self.status.label().to_string(),
+        }
+    }
+
+    pub fn menu_status_label(&self) -> String {
+        match (self.visual_state(), &self.active_game_label) {
+            (TrayVisualState::ActiveGame, Some(game)) => format!("● Tracking: {}", game),
+            (TrayVisualState::Paused, _) => "⏸ Tracking Paused".to_string(),
+            (TrayVisualState::SignInNeeded, _) => {
+                "○ Standing by (Local mode · Sign in to sync)".to_string()
+            }
+            (TrayVisualState::Idle, _) => "○ Standing by — No game open".to_string(),
+            _ => self.status.label().to_string(),
         }
     }
 }
@@ -110,8 +191,8 @@ mod linux_tray {
     use ksni::blocking::TrayMethods;
     use std::sync::LazyLock;
 
-    static LINUX_ICON: LazyLock<Option<ksni::Icon>> = LazyLock::new(|| {
-        let icon = eframe::icon_data::from_png_bytes(TRAY_ICON_PNG).ok()?;
+    fn decode_sni_icon(png_bytes: &[u8]) -> Option<ksni::Icon> {
+        let icon = eframe::icon_data::from_png_bytes(png_bytes).ok()?;
         let mut data = icon.rgba;
         for px in data.chunks_exact_mut(4) {
             px.rotate_right(1); // RGBA -> ARGB network order expected by StatusNotifierItem
@@ -121,7 +202,16 @@ mod linux_tray {
             height: icon.height as i32,
             data,
         })
-    });
+    }
+
+    static LINUX_ICON_IDLE: LazyLock<Option<ksni::Icon>> =
+        LazyLock::new(|| decode_sni_icon(TRAY_ICON_IDLE_PNG));
+    static LINUX_ICON_TRACKING: LazyLock<Option<ksni::Icon>> =
+        LazyLock::new(|| decode_sni_icon(TRAY_ICON_TRACKING_PNG));
+    static LINUX_ICON_PAUSED: LazyLock<Option<ksni::Icon>> =
+        LazyLock::new(|| decode_sni_icon(TRAY_ICON_PAUSED_PNG));
+    static LINUX_ICON_SIGNIN: LazyLock<Option<ksni::Icon>> =
+        LazyLock::new(|| decode_sni_icon(TRAY_ICON_SIGNIN_PNG));
 
     pub struct OneHundoLinuxTray {
         pub model: TrayModel,
@@ -160,13 +250,19 @@ mod linux_tray {
         }
 
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-            LINUX_ICON.iter().cloned().collect()
+            let icon = match self.model.visual_state() {
+                TrayVisualState::ActiveGame => LINUX_ICON_TRACKING.as_ref(),
+                TrayVisualState::Paused => LINUX_ICON_PAUSED.as_ref(),
+                TrayVisualState::SignInNeeded => LINUX_ICON_SIGNIN.as_ref(),
+                TrayVisualState::Idle => LINUX_ICON_IDLE.as_ref(),
+            };
+            icon.cloned().into_iter().collect()
         }
 
         fn tool_tip(&self) -> ksni::ToolTip {
             ksni::ToolTip {
-                title: "OneHundo".to_string(),
-                description: self.model.status.label().to_string(),
+                title: self.model.tooltip_summary(),
+                description: self.model.tooltip_detail(),
                 ..Default::default()
             }
         }
@@ -182,13 +278,25 @@ mod linux_tray {
             } else {
                 "Pause Tracking"
             };
-            vec![
-                StandardItem {
-                    label: self.model.status.label().to_string(),
-                    enabled: false,
-                    ..Default::default()
+            let mut items: Vec<ksni::MenuItem<Self>> = vec![StandardItem {
+                label: self.model.menu_status_label(),
+                enabled: false,
+                ..Default::default()
+            }
+            .into()];
+            if self.model.visual_state() == TrayVisualState::ActiveGame {
+                if let Some(ref detail) = self.model.active_tracking_detail {
+                    items.push(
+                        StandardItem {
+                            label: format!("  {}", detail),
+                            enabled: false,
+                            ..Default::default()
+                        }
+                        .into(),
+                    );
                 }
-                .into(),
+            }
+            items.extend([
                 MenuItem::Separator,
                 StandardItem {
                     label: "Open OneHundo".to_string(),
@@ -229,7 +337,8 @@ mod linux_tray {
                     ..Default::default()
                 }
                 .into(),
-            ]
+            ]);
+            items
         }
     }
 
@@ -302,6 +411,36 @@ mod tests {
         assert_eq!(TrayStatus::TrackingActive.label(), "Tracking Active");
         assert_eq!(TrayStatus::Paused.label(), "Paused");
         assert_eq!(TrayStatus::SignInNeeded.label(), "Sign In Needed");
+    }
+
+    #[test]
+    fn tray_visual_state_and_tooltips_highlight_active_game() {
+        let mut model = TrayModel::new(false, false, false, true);
+        assert_eq!(model.visual_state(), TrayVisualState::SignInNeeded);
+        assert_eq!(model.menu_status_label(), "○ Standing by (Local mode · Sign in to sync)");
+
+        // Even in local mode, launching a supported game switches the tray icon stripe to Teal (ActiveGame)
+        model.sync_state(
+            false,
+            false,
+            false,
+            Some("Ocarina of Time".to_string()),
+            Some("Running process detected · longshot (PID 4242)".to_string()),
+        );
+        assert_eq!(model.visual_state(), TrayVisualState::ActiveGame);
+        assert_eq!(model.tooltip_summary(), "OneHundo — Tracking Ocarina of Time");
+        assert!(model.tooltip_detail().contains("longshot (PID 4242)"));
+        assert_eq!(model.menu_status_label(), "● Tracking: Ocarina of Time");
+
+        // Signed in and idle returns to Idle visual state
+        model.sync_state(false, true, false, None, None);
+        assert_eq!(model.visual_state(), TrayVisualState::Idle);
+        assert_eq!(model.menu_status_label(), "○ Standing by — No game open");
+
+        // Pausing overrides active game state
+        model.sync_state(true, true, false, Some("Ocarina of Time".to_string()), None);
+        assert_eq!(model.visual_state(), TrayVisualState::Paused);
+        assert_eq!(model.tooltip_summary(), "OneHundo — Paused");
     }
 
     #[test]

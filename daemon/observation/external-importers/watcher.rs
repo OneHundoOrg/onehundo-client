@@ -1,12 +1,12 @@
 //! Polling directory watcher for Plane C external observation artifacts.
 //! Scans configured directories (Goldberg/GSE, RPCS3/shadPS4 trophy dirs, Longshot `progress.sav`,
-//! `.oh-obs.json`, and pack-declared save `file_glob`s) and supports debounced change detection.
+//! `trophies.jsonl`, `.oh-obs.json`, and pack-declared save `file_glob`s) and supports debounced change detection.
 
 use super::declarative_save::safe_contained_path;
 use crate::core::config::WatchedObservationDir;
 use crate::packs::matcher::glob_matches;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
@@ -50,15 +50,45 @@ fn is_builtin_watchable_file(path: &Path) -> bool {
             | "trophies.xml"
             | "tropusr.json"
             | "trophies.json"
+            | "trophies.jsonl"
             | "trophy.json"
     ) || lower.ends_with(".oh-obs.json")
+}
+
+fn has_ignored_non_save_extension(file: &Path) -> bool {
+    let Some(ext) = file.extension().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "webp"
+            | "gif"
+            | "bmp"
+            | "tga"
+            | "dds"
+            | "ico"
+            | "svg"
+            | "sfo"
+            | "wav"
+            | "mp3"
+            | "ogg"
+            | "mp4"
+            | "mkv"
+            | "so"
+            | "dll"
+            | "exe"
+            | "appimage"
+    )
 }
 
 fn is_watchable_for_globs(root: &Path, file: &Path, extra_globs: &[String]) -> bool {
     if is_builtin_watchable_file(file) {
         return true;
     }
-    if extra_globs.is_empty() {
+    if extra_globs.is_empty() || has_ignored_non_save_extension(file) {
         return false;
     }
     let rel = file
@@ -119,6 +149,10 @@ fn read_file_stamp(path: &Path) -> Option<FileStamp> {
 impl DirectoryWatcherState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn seen_paths_snapshot(&self) -> HashSet<PathBuf> {
+        self.seen.keys().cloned().collect()
     }
 
     /// Return `(path, canonical_game_id)` pairs for newly added or modified observation files immediately.

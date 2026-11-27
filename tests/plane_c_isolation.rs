@@ -780,3 +780,65 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn bbport_trophies_jsonl_maps_psn_ids_deduplicates_earliest_and_preserves_null_timestamps() {
+    let dir = common::temp_test_dir("plane_c_bbport_jsonl");
+    let packs_dir = dir.join("packs");
+    let bb_user = dir.join("bb_user");
+    fs::create_dir_all(&packs_dir).unwrap();
+    fs::create_dir_all(&bb_user).unwrap();
+
+    let bb_src =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/sony.bloodborne.bbport.onehundo");
+    fs::copy(&bb_src, packs_dir.join("sony.bloodborne.bbport.onehundo")).unwrap();
+
+    let jsonl = concat!(
+        r#"{"v":1,"title_id":"CUSA03173","trophy_id":21,"unlocked_at":"2026-11-06T20:00:00Z"}"#, "
+",
+        r#"{"v":1,"title_id":"CUSA03173","trophy_id":21,"unlocked_at":"2026-11-06T16:21:56Z"}"#, "
+",
+        r#"{"v":1,"title_id":"CUSA03173","trophy_id":1}"#, "
+",
+    );
+    fs::write(bb_user.join("trophies.jsonl"), jsonl).unwrap();
+
+    let mut cfg = DaemonConfig::default();
+    cfg.config_dir = dir.join("cfg");
+    cfg.data_dir = dir.join("data");
+    cfg.packs_dirs = vec![packs_dir];
+    cfg.watched_observation_dirs = vec![WatchedObservationDir {
+        path: bb_user.clone(),
+        canonical_game_id: None,
+    }];
+    cfg.notifications_enabled = false;
+
+    let engine = DaemonEngine::initialize(cfg).expect("init engine");
+    let poll1 = engine.poll_watched_observation_dirs();
+    assert_eq!(poll1.files_changed, 1);
+    assert_eq!(poll1.imported, 2);
+
+    let snap = engine.health_snapshot().unwrap();
+    assert!(snap.recent_trophies.iter().any(|t| t.canonical_achievement_id == "a22" && t.achievement_title == "Cleric Beast"));
+    assert!(snap.recent_trophies.iter().any(|t| t.canonical_achievement_id == "a02" && t.achievement_title == "Yharnam Sunrise"));
+
+    // Verify earliest timestamp was preserved for a22 and null preserved for a02
+    let a22_obs = snap.recent_observations.iter().find(|o| o.key == "a22").unwrap();
+    assert_eq!(a22_obs.source_timestamp.as_deref(), Some("2026-11-06T16:21:56Z"));
+    let a02_obs = snap.recent_observations.iter().find(|o| o.key == "a02").unwrap();
+    assert_eq!(a02_obs.source_timestamp, None);
+
+    // Appending a repeat line for trophy_id 21 is idempotent
+    fs::write(
+        bb_user.join("trophies.jsonl"),
+        format!("{}{}
+", jsonl, r#"{"v":1,"title_id":"CUSA03173","trophy_id":21,"unlocked_at":"2026-11-07T01:00:00Z"}"#),
+    )
+    .unwrap();
+    let poll2 = engine.poll_watched_observation_dirs();
+    assert_eq!(poll2.files_changed, 1);
+    assert_eq!(poll2.imported, 0);
+    assert_eq!(poll2.deduplicated, 2);
+
+    let _ = fs::remove_dir_all(&dir);
+}

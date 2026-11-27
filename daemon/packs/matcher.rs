@@ -181,7 +181,13 @@ impl PackRegistry {
             }
             if let Some(obs) = &p.manifest.profiles.observation {
                 for s in &obs.sources {
+                    if s.source_type == "trophy_dir" {
+                        continue;
+                    }
                     if let Some(fg) = &s.file_glob {
+                        if fg == "**/savedata/**" {
+                            continue;
+                        }
                         if !globs.contains(fg) {
                             globs.push(fg.clone());
                         }

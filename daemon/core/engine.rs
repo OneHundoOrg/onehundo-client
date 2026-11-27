@@ -3,8 +3,8 @@ use crate::core::config::{
     Credentials, DaemonConfig, WatchedObservationDir,
 };
 use crate::core::process_monitor::{
-    format_edition_or_pack, match_running_processes, scan_running_processes, DetectedProcessMatch,
-    ProcessInfo,
+    discover_process_observation_dirs_with_globs, format_edition_or_pack,
+    match_running_processes, scan_running_processes, DetectedProcessMatch, ProcessInfo,
 };
 use crate::core::session::{SessionInfo, SessionManager};
 use crate::core::types::{
@@ -12,7 +12,8 @@ use crate::core::types::{
     VerificationState,
 };
 use crate::diagnostics::{
-    GameHealthSnapshot, LauncherGameTelemetry, LibraryGameProgress, PlaneARingTelemetry,
+    ActiveTrackingTarget, GameHealthSnapshot, LauncherGameTelemetry, LibraryGameProgress,
+    PlaneARingTelemetry,
     PlaneATelemetry, RecentTrophyItem, RetroArchTelemetry, SyncTelemetry,
 };
 use crate::evaluation::memory_arena::{FrameStepOutcome, MemoryArenaEvaluatorState};
@@ -26,7 +27,7 @@ use crate::observation::external_importers::{
     import_observation_path_with_options, import_observation_records, list_observation_history,
     parse_observation_json_str, ImportOptions, ObservationImportSummary,
 };
-use crate::packs::matcher::{MatchQuery, PackMatchResult, PackRegistry};
+use crate::packs::matcher::{glob_matches, MatchQuery, PackMatchResult, PackRegistry};
 use crate::storage::journal::{open_and_init_db, query_journal_stats, record_frame_gap_db};
 use crate::storage::state::{list_encore_runs, list_stats, list_trophies};
 use crate::sync::client::{register_device, sync_pending_batch, SyncBatchSummary};
@@ -35,7 +36,7 @@ use crate::ui::notifications::{
 };
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -62,6 +63,8 @@ pub struct DaemonEngine {
     pub retroarch_sessions: Mutex<HashMap<String, (String, u64)>>,
     pub notifications: NotificationManager,
     pub sync_telemetry: Mutex<SyncTelemetry>,
+    pub last_process_scan_at: Mutex<Option<String>>,
+    pub last_watch_scan_at: Mutex<Option<String>>,
     pub started_at: Instant,
 }
 
@@ -136,6 +139,8 @@ impl DaemonEngine {
             retroarch_telemetry: Mutex::new(ra_tel),
             retroarch_sessions: Mutex::new(HashMap::new()),
             sync_telemetry: Mutex::new(sync_tel),
+            last_process_scan_at: Mutex::new(None),
+            last_watch_scan_at: Mutex::new(None),
             started_at: Instant::now(),
         }))
     }
@@ -312,6 +317,7 @@ impl DaemonEngine {
             .collect();
 
         *self.detected_processes.lock().unwrap() = detected.clone();
+        *self.last_process_scan_at.lock().unwrap() = Some(now_rfc3339());
 
         for exited in prev_games.difference(&next_games) {
             self.clear_game_active_if_untracked(exited);
@@ -898,11 +904,17 @@ impl DaemonEngine {
         if !summary.dry_run && summary.imported > 0 {
             let imported_ids: std::collections::HashSet<&str> =
                 summary.observation_ids.iter().map(String::as_str).collect();
-            for rec in &summary.records {
-                if imported_ids.contains(rec.observation_id.as_str())
-                    && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
-                    && rec.unlocked == Some(true)
-                {
+            let unlocked_imports: Vec<_> = summary
+                .records
+                .iter()
+                .filter(|rec| {
+                    imported_ids.contains(rec.observation_id.as_str())
+                        && rec.record_kind == "ACHIEVEMENT_EVIDENCE"
+                        && rec.unlocked == Some(true)
+                })
+                .collect();
+            if unlocked_imports.len() <= 3 {
+                for rec in unlocked_imports {
                     let (game_title, ach_title, ach_desc) = pack_meta
                         .get(&rec.canonical_game_id)
                         .map(|(g_title, ach_map)| {
@@ -1004,15 +1016,30 @@ impl DaemonEngine {
         if self.is_tracking_paused() {
             return WatchPollSummary::default();
         }
-        let dirs = self.list_watch_overrides();
-        let extra_globs = {
+        let mut dirs = self.list_watch_overrides();
+        let active_procs = self.detected_processes.lock().unwrap().clone();
+        let (extra_globs, pack_watch_dirs) = {
             let packs = self.packs.lock().unwrap();
-            packs.all_watch_file_globs()
+            (
+                packs.all_watch_file_globs(),
+                resolve_pack_watch_dirs(&packs),
+            )
         };
+        for runtime_dir in discover_process_observation_dirs_with_globs(&active_procs, &extra_globs) {
+            if !dirs.iter().any(|d| d.path == runtime_dir.path) {
+                dirs.push(runtime_dir);
+            }
+        }
+        for auto_dir in pack_watch_dirs {
+            if !dirs.iter().any(|d| d.path == auto_dir.path) {
+                dirs.push(auto_dir);
+            }
+        }
         let (scanned, changed) = {
             let mut watcher = self.watcher_state.lock().unwrap();
             watcher.collect_changed_targets_with_globs(&dirs, &extra_globs, debounce_ms)
         };
+        *self.last_watch_scan_at.lock().unwrap() = Some(now_rfc3339());
         let mut out = WatchPollSummary {
             files_scanned: scanned,
             files_changed: changed.len(),
@@ -1225,8 +1252,22 @@ impl DaemonEngine {
         let status = match client.get_status() {
             Ok(s) => s,
             Err(e) => {
+                let ended: Vec<String> = self
+                    .retroarch_sessions
+                    .lock()
+                    .unwrap()
+                    .drain()
+                    .map(|(_, (sid, _))| sid)
+                    .collect();
+                for sid in ended {
+                    self.end_session(&sid);
+                }
                 let mut tel = self.retroarch_telemetry.lock().unwrap();
                 tel.connected = false;
+                tel.session_id = None;
+                tel.active_system = None;
+                tel.active_content = None;
+                tel.content_crc = None;
                 tel.last_error = Some(e);
                 return Ok(());
             }
@@ -1701,10 +1742,129 @@ impl DaemonEngine {
             )
         };
 
+        let retroarch = self.retroarch_telemetry.lock().unwrap().clone();
+        let paused = self.is_tracking_paused();
+        let mut active_trackings: Vec<ActiveTrackingTarget> = Vec::new();
+        if !paused {
+            let mut seen_active: HashMap<String, usize> = HashMap::new();
+            let lib_by_gid: HashMap<&str, &LibraryGameProgress> = library_games
+                .iter()
+                .map(|g| (g.canonical_game_id.as_str(), g))
+                .collect();
+
+            for sess in sessions.iter().filter(|s| s.active) {
+                let is_retroarch = retroarch.session_id.as_deref() == Some(sess.session_id.as_str());
+                let source = if is_retroarch {
+                    "RetroArch UDP".to_string()
+                } else {
+                    match sess.ingestion_plane {
+                        IngestionPlane::MemoryArena => "Live memory bridge".to_string(),
+                        IngestionPlane::SemanticEvent => "Live game hook".to_string(),
+                        IngestionPlane::ExternalObservation => "Observation import".to_string(),
+                    }
+                };
+                let detail = if is_retroarch {
+                    retroarch
+                        .active_content
+                        .clone()
+                        .or_else(|| retroarch.active_system.clone())
+                        .unwrap_or_else(|| "RetroArch core active".to_string())
+                } else {
+                    format!("{} session", sess.producer_id)
+                };
+                let lib = lib_by_gid.get(sess.canonical_game_id.as_str());
+                let idx = active_trackings.len();
+                seen_active.insert(sess.canonical_game_id.clone(), idx);
+                active_trackings.push(ActiveTrackingTarget {
+                    canonical_game_id: sess.canonical_game_id.clone(),
+                    pack_id: sess
+                        .matched_pack_id
+                        .clone()
+                        .or_else(|| lib.map(|g| g.pack_id.clone()))
+                        .unwrap_or_else(|| sess.producer_id.clone()),
+                    game_title: lib
+                        .map(|g| g.title.clone())
+                        .unwrap_or_else(|| sess.canonical_game_id.clone()),
+                    edition_or_pack: lib
+                        .map(|g| g.edition_or_pack.clone())
+                        .unwrap_or_else(|| sess.producer_id.clone()),
+                    source,
+                    detail,
+                    unlocked_count: lib.map(|g| g.unlocked_count).unwrap_or(0),
+                    total_achievements: lib.map(|g| g.total_achievements).unwrap_or(0),
+                    completion_percent: lib.map(|g| g.completion_percent).unwrap_or(0),
+                });
+            }
+
+            for proc_match in &active_procs {
+                let detail = format!("{} (PID {})", proc_match.executable, proc_match.pid);
+                if let Some(&existing_idx) = seen_active.get(&proc_match.canonical_game_id) {
+                    if !active_trackings[existing_idx].detail.contains(&proc_match.executable) {
+                        active_trackings[existing_idx].detail = format!(
+                            "{} · {}",
+                            active_trackings[existing_idx].detail, detail
+                        );
+                    }
+                    continue;
+                }
+                let lib = lib_by_gid.get(proc_match.canonical_game_id.as_str());
+                let idx = active_trackings.len();
+                seen_active.insert(proc_match.canonical_game_id.clone(), idx);
+                active_trackings.push(ActiveTrackingTarget {
+                    canonical_game_id: proc_match.canonical_game_id.clone(),
+                    pack_id: proc_match.pack_id.clone(),
+                    game_title: proc_match.game_title.clone(),
+                    edition_or_pack: proc_match.edition_or_pack.clone(),
+                    source: "Running process detected".to_string(),
+                    detail,
+                    unlocked_count: lib.map(|g| g.unlocked_count).unwrap_or(0),
+                    total_achievements: lib.map(|g| g.total_achievements).unwrap_or(0),
+                    completion_percent: lib.map(|g| g.completion_percent).unwrap_or(0),
+                });
+            }
+
+            for lg in launcher_games.iter().filter(|g| g.active) {
+                if seen_active.contains_key(&lg.canonical_game_id) {
+                    continue;
+                }
+                let lib = lib_by_gid.get(lg.canonical_game_id.as_str());
+                let detail = lg
+                    .executable
+                    .clone()
+                    .or_else(|| lg.app_id.clone())
+                    .unwrap_or_else(|| lg.launcher.clone());
+                let idx = active_trackings.len();
+                seen_active.insert(lg.canonical_game_id.clone(), idx);
+                active_trackings.push(ActiveTrackingTarget {
+                    canonical_game_id: lg.canonical_game_id.clone(),
+                    pack_id: lg
+                        .pack_id
+                        .clone()
+                        .unwrap_or_else(|| lg.launcher.clone()),
+                    game_title: lg
+                        .game_title
+                        .clone()
+                        .or_else(|| lib.map(|g| g.title.clone()))
+                        .unwrap_or_else(|| lg.canonical_game_id.clone()),
+                    edition_or_pack: lib
+                        .map(|g| g.edition_or_pack.clone())
+                        .or_else(|| lg.pack_id.clone())
+                        .unwrap_or_else(|| lg.launcher.clone()),
+                    source: format!("Launcher ({})", lg.launcher),
+                    detail,
+                    unlocked_count: lg.unlocked_count,
+                    total_achievements: lg.total_achievements,
+                    completion_percent: lg.completion_percent,
+                });
+            }
+        }
+
         let active_progression_mode = self.current_progression_mode();
         let sync = self.sync_telemetry.lock().unwrap().clone();
         let recent_notifications = self.notifications.recent();
         let (account_signed_in, account_username, _, platform_url) = self.account_status();
+        let last_process_scan_at = self.last_process_scan_at.lock().unwrap().clone();
+        let last_watch_scan_at = self.last_watch_scan_at.lock().unwrap().clone();
 
         let mut rings: Vec<PlaneARingTelemetry> =
             self.plane_a_rings.lock().unwrap().values().cloned().collect();
@@ -1751,11 +1911,14 @@ impl DaemonEngine {
             sessions,
             installed_packs,
             library_games,
+            active_trackings,
+            last_process_scan_at,
+            last_watch_scan_at,
             recent_trophies,
             recent_observations,
             watched_dirs: self.list_watch_overrides(),
             launcher_games,
-            retroarch: self.retroarch_telemetry.lock().unwrap().clone(),
+            retroarch,
             recent_notifications,
         })
     }
@@ -1771,6 +1934,300 @@ impl DaemonEngine {
             "encore_runs": encore_runs,
         }))
     }
+}
+
+fn watch_os_matches(spec_os: &str, current_os: &str) -> bool {
+    let spec = spec_os.trim().to_ascii_lowercase();
+    if spec == "any" || spec == current_os {
+        return true;
+    }
+    current_os == "linux" && spec == "steamos"
+}
+
+fn expand_watch_vars(raw: &str, home_override: Option<&Path>) -> Option<String> {
+    let mut s = raw.trim().replace('\\', "/");
+    if s.is_empty() {
+        return None;
+    }
+    let home = home_override
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("USERPROFILE").map(PathBuf::from))
+        .map(|p| p.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_string());
+
+    if s == "~" || s.starts_with("~/") {
+        let h = home.as_ref()?;
+        s = if s == "~" {
+            h.clone()
+        } else {
+            format!("{}/{}", h, &s[2..])
+        };
+    }
+    if s.contains("$HOME") || s.contains("${HOME}") {
+        let h = home.as_ref()?;
+        s = s.replace("${HOME}", h).replace("$HOME", h);
+    }
+    if s.contains("$XDG_CONFIG_HOME") || s.contains("${XDG_CONFIG_HOME}") {
+        let cfg = std::env::var_os("XDG_CONFIG_HOME")
+            .map(|v| PathBuf::from(v).to_string_lossy().replace('\\', "/"))
+            .or_else(|| home.as_ref().map(|h| format!("{}/.config", h)))?;
+        s = s
+            .replace("${XDG_CONFIG_HOME}", &cfg)
+            .replace("$XDG_CONFIG_HOME", &cfg);
+    }
+    if s.contains("$XDG_DATA_HOME") || s.contains("${XDG_DATA_HOME}") {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .map(|v| PathBuf::from(v).to_string_lossy().replace('\\', "/"))
+            .or_else(|| home.as_ref().map(|h| format!("{}/.local/share", h)))?;
+        s = s
+            .replace("${XDG_DATA_HOME}", &data)
+            .replace("$XDG_DATA_HOME", &data);
+    }
+    if s.contains("%USERPROFILE%") {
+        let h = home.as_ref()?;
+        s = s.replace("%USERPROFILE%", h);
+    }
+    if s.contains("%APPDATA%") {
+        let val = std::env::var_os("APPDATA")
+            .map(|v| PathBuf::from(v).to_string_lossy().replace('\\', "/"))?;
+        s = s.replace("%APPDATA%", &val);
+    }
+    if s.contains("%LOCALAPPDATA%") {
+        let val = std::env::var_os("LOCALAPPDATA")
+            .map(|v| PathBuf::from(v).to_string_lossy().replace('\\', "/"))?;
+        s = s.replace("%LOCALAPPDATA%", &val);
+    }
+    if s.contains('%') || s.contains('$') {
+        return None;
+    }
+    Some(s)
+}
+
+fn split_glob_path(expanded: &str) -> Option<(PathBuf, Vec<String>)> {
+    let normalized = expanded.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return None;
+    }
+    let bytes = normalized.as_bytes();
+    let (root, rest) = if normalized.starts_with('/') {
+        (PathBuf::from("/"), normalized.trim_start_matches('/'))
+    } else if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        (PathBuf::from(&normalized[..3]), &normalized[3..])
+    } else {
+        return None;
+    };
+
+    let mut segs: Vec<String> = rest
+        .split('/')
+        .filter(|seg| !seg.is_empty() && *seg != ".")
+        .map(str::to_string)
+        .collect();
+
+    while let Some(last) = segs.last() {
+        if last == "**"
+            || last == "*"
+            || ((last.contains('*') || last.contains('?')) && last.contains('.'))
+        {
+            segs.pop();
+        } else {
+            break;
+        }
+    }
+
+    if segs.is_empty() {
+        return None;
+    }
+    Some((root, segs))
+}
+
+fn resolve_glob_segments(
+    curr: &Path,
+    segs: &[String],
+    depth: usize,
+    out: &mut Vec<PathBuf>,
+) {
+    const MAX_RESULTS: usize = 64;
+    const MAX_WALK_DEPTH: usize = 6;
+    if out.len() >= MAX_RESULTS || depth > 8 {
+        return;
+    }
+    if segs.is_empty() {
+        let target = if curr.is_dir() {
+            Some(curr.to_path_buf())
+        } else if curr.is_file() {
+            curr.parent().map(Path::to_path_buf)
+        } else {
+            None
+        };
+        if let Some(dir) = target {
+            if !out.contains(&dir) {
+                out.push(dir);
+            }
+        }
+        return;
+    }
+
+    let head = &segs[0];
+    let tail = &segs[1..];
+    if head == "**" {
+        resolve_glob_segments(curr, tail, depth, out);
+        if depth < MAX_WALK_DEPTH && curr.is_dir() {
+            if let Ok(rd) = std::fs::read_dir(curr) {
+                let mut subdirs: Vec<PathBuf> = rd
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect();
+                subdirs.sort();
+                for sub in subdirs {
+                    if out.len() >= MAX_RESULTS {
+                        break;
+                    }
+                    resolve_glob_segments(&sub, segs, depth + 1, out);
+                }
+            }
+        }
+    } else if head.contains('*') || head.contains('?') {
+        if !curr.is_dir() {
+            return;
+        }
+        if let Ok(rd) = std::fs::read_dir(curr) {
+            let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();
+            entries.sort();
+            for entry in entries {
+                if out.len() >= MAX_RESULTS {
+                    break;
+                }
+                let Some(name) = entry.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if !glob_matches(head, name) {
+                    continue;
+                }
+                if tail.is_empty() {
+                    let target = if entry.is_dir() {
+                        Some(entry)
+                    } else if entry.is_file() {
+                        Some(curr.to_path_buf())
+                    } else {
+                        None
+                    };
+                    if let Some(dir) = target {
+                        if !out.contains(&dir) {
+                            out.push(dir);
+                        }
+                    }
+                } else if entry.is_dir() {
+                    resolve_glob_segments(&entry, tail, depth + 1, out);
+                }
+            }
+        }
+    } else {
+        let next = curr.join(head);
+        if next.exists() {
+            resolve_glob_segments(&next, tail, depth + 1, out);
+        }
+    }
+}
+
+pub fn resolve_watch_path_glob_with_home(raw: &str, home_override: Option<&Path>) -> Vec<PathBuf> {
+    let Some(expanded) = expand_watch_vars(raw, home_override) else {
+        return Vec::new();
+    };
+    let Some((root, segs)) = split_glob_path(&expanded) else {
+        return Vec::new();
+    };
+
+    let first_wild = segs
+        .iter()
+        .position(|s| s.contains('*') || s.contains('?'))
+        .unwrap_or(segs.len());
+    let mut prefix = root;
+    for seg in &segs[..first_wild] {
+        prefix.push(seg);
+    }
+    if !prefix.exists() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let rest = &segs[first_wild..];
+    resolve_glob_segments(&prefix, rest, 0, &mut out);
+    out
+}
+
+fn is_shared_multi_game_dir(resolved_dir: &Path) -> bool {
+    let norm = resolved_dir.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    norm.ends_with("/retroarch/saves")
+        || norm.ends_with("/mupen64plus/save")
+        || norm.ends_with("/dolphin-emu/gc")
+        || norm.ends_with("/dolphin emulator/gc")
+        || (norm.ends_with("/trophy") && !norm.contains("/cusa") && !norm.contains("/npwr"))
+}
+
+pub fn resolve_pack_watch_dirs_with_home(
+    packs: &PackRegistry,
+    home_override: Option<&Path>,
+) -> Vec<WatchedObservationDir> {
+    let current_os = match std::env::consts::OS {
+        "linux" => "linux",
+        "windows" => "windows",
+        "macos" => "macos",
+        other => other,
+    };
+    let has_longshot_pack = packs.get("nintendo.oot.longshot.pc").is_some();
+    let mut resolved_order: Vec<PathBuf> = Vec::new();
+    let mut owners: HashMap<PathBuf, Option<String>> = HashMap::new();
+
+    for pack in packs.list() {
+        let Some(obs) = &pack.manifest.profiles.observation else {
+            continue;
+        };
+        if !obs.enabled {
+            continue;
+        }
+        for wp in &obs.watch_paths {
+            if !watch_os_matches(&wp.os, current_os) {
+                continue;
+            }
+            let effective_gid = if has_longshot_pack
+                && wp.path_glob.to_ascii_lowercase().contains("progress.sav")
+            {
+                "nintendo.oot.longshot.pc"
+            } else {
+                pack.manifest.canonical_game_id.as_str()
+            };
+
+            for dir in resolve_watch_path_glob_with_home(&wp.path_glob, home_override) {
+                let canon = std::fs::canonicalize(&dir).unwrap_or(dir);
+                let shared_gid = if is_shared_multi_game_dir(&canon) {
+                    None
+                } else {
+                    Some(effective_gid.to_string())
+                };
+                if let Some(existing) = owners.get_mut(&canon) {
+                    if *existing != shared_gid {
+                        *existing = None;
+                    }
+                } else {
+                    resolved_order.push(canon.clone());
+                    owners.insert(canon, shared_gid);
+                }
+            }
+        }
+    }
+
+    resolved_order
+        .into_iter()
+        .map(|path| WatchedObservationDir {
+            canonical_game_id: owners.remove(&path).flatten(),
+            path,
+        })
+        .collect()
+}
+
+pub fn resolve_pack_watch_dirs(packs: &PackRegistry) -> Vec<WatchedObservationDir> {
+    resolve_pack_watch_dirs_with_home(packs, None)
 }
 
 fn parse_hex_or_dec_u64(raw: &str) -> Result<u64, String> {
@@ -1821,6 +2278,7 @@ mod tests {
             pid: 55123,
             comm: "bbport".to_string(),
             exe_name: Some("bbport".to_string()),
+            ..Default::default()
         }];
 
         // Tick 1: game starts -> single notification fired

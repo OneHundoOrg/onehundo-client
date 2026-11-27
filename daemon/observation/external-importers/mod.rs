@@ -424,6 +424,7 @@ pub fn parse_observation_path_with_options(
             "trophies.xml",
             "TROPUSR.json",
             "trophies.json",
+            "trophies.jsonl",
             "trophy.json",
         ]
         .iter()
@@ -490,7 +491,7 @@ pub fn parse_observation_path_with_options(
         "achievements.json" | "achievements.ini" => goldberg::parse_goldberg_path(path, opts),
         "progress.sav" => longshot::parse_longshot_path(path, opts),
         "tropusr.dat" | "trop.xml" | "tropusr.xml" | "trop.sfm" | "tropconf.sfm"
-        | "trophies.xml" | "tropusr.json" | "trophies.json" | "trophy.json" => {
+        | "trophies.xml" | "tropusr.json" | "trophies.json" | "trophies.jsonl" | "trophy.json" => {
             trophy_dir::parse_trophy_file(path, packs, opts)
         }
         _ => {

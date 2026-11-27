@@ -11,7 +11,7 @@ use crate::diagnostics::GameHealthSnapshot;
 use crate::sync::http::http_request;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone)]
 pub struct BackendActionResult {
@@ -22,7 +22,7 @@ pub struct BackendActionResult {
 enum BackendKind {
     Embedded {
         engine: Arc<DaemonEngine>,
-        runtime: Option<DaemonRuntimeHandles>,
+        runtime: Mutex<Option<DaemonRuntimeHandles>>,
         _lock: InstanceLock,
     },
     Attached {
@@ -51,7 +51,7 @@ impl DesktopBackend {
                 Ok(Self {
                     kind: BackendKind::Embedded {
                         engine,
-                        runtime: Some(runtime),
+                        runtime: Mutex::new(Some(runtime)),
                         _lock: lock,
                     },
                     autostart_path,
@@ -80,7 +80,7 @@ impl DesktopBackend {
         Ok(Self {
             kind: BackendKind::Embedded {
                 engine,
-                runtime: None,
+                runtime: Mutex::new(None),
                 _lock: lock,
             },
             autostart_path,
@@ -377,10 +377,12 @@ impl DesktopBackend {
         set_autostart_enabled(&self.autostart_path, enabled, &exec, true)
     }
 
-    pub fn shutdown(mut self) {
-        if let BackendKind::Embedded { ref mut runtime, .. } = self.kind {
-            if let Some(rt) = runtime.take() {
-                rt.shutdown_and_join();
+    pub fn shutdown(&self) {
+        if let BackendKind::Embedded { ref runtime, .. } = self.kind {
+            if let Ok(mut guard) = runtime.lock() {
+                if let Some(rt) = guard.take() {
+                    rt.shutdown_and_join();
+                }
             }
         }
     }

@@ -18,7 +18,11 @@ pub const WARNING: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x3D);
 pub const TEAL: Color32 = Color32::from_rgb(0x3F, 0xA9, 0xA4);
 
 pub const APP_ICON_PNG: &[u8] = include_bytes!("assets/onehundo_256.png");
-pub const TRAY_ICON_PNG: &[u8] = include_bytes!("assets/onehundo_64.png");
+pub const TRAY_ICON_PNG: &[u8] = include_bytes!("assets/tray_idle.png");
+pub const TRAY_ICON_IDLE_PNG: &[u8] = include_bytes!("assets/tray_idle.png");
+pub const TRAY_ICON_TRACKING_PNG: &[u8] = include_bytes!("assets/tray_tracking.png");
+pub const TRAY_ICON_PAUSED_PNG: &[u8] = include_bytes!("assets/tray_paused.png");
+pub const TRAY_ICON_SIGNIN_PNG: &[u8] = include_bytes!("assets/tray_signin.png");
 const ARCHIVO_BOLD_TTF: &[u8] = include_bytes!("assets/fonts/Archivo-Bold.ttf");
 const INTER_REGULAR_TTF: &[u8] = include_bytes!("assets/fonts/Inter-Regular.ttf");
 const INTER_SEMIBOLD_TTF: &[u8] = include_bytes!("assets/fonts/Inter-SemiBold.ttf");
@@ -268,17 +272,13 @@ pub fn muted_label(ui: &mut egui::Ui, text: &str) {
 
 pub fn wordmark_square(ui: &mut egui::Ui) {
     ui.horizontal_centered(|ui| {
-        ui.spacing_mut().item_spacing.x = 10.0;
-        let (sq, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+        ui.spacing_mut().item_spacing.x = 9.0;
+        let (sq, _) = ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::hover());
         ui.painter().rect_filled(sq, CornerRadius::ZERO, INK);
-        // Subtle gilt inner corner hairline matching favicon geometry
-        let inner = sq.shrink(5.0);
-        ui.painter().rect_filled(inner, CornerRadius::ZERO, PAPER);
         ui.label(
-            RichText::new("ONEHUNDO")
+            RichText::new("One\nHundo")
                 .font(display_font(16.0))
                 .color(INK)
-                .extra_letter_spacing(1.2),
         );
     });
 }

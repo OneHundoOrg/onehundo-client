@@ -8,7 +8,7 @@ use onehundo_client::evaluation::semantic_events::SemanticEventPayload;
 use onehundo_client::packs::matcher::MatchQuery;
 use onehundo_client::sync::http::http_request;
 use onehundo_client::ui::desktop::backend::DesktopBackend;
-use onehundo_client::ui::desktop::tray::{TrayModel, TrayStatus};
+use onehundo_client::ui::desktop::tray::{TrayModel, TrayStatus, TrayVisualState};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -36,7 +36,13 @@ fn instant_game_active_notification_deduplicates_across_sessions_and_process_pol
 
     let engine = DaemonEngine::initialize(cfg).expect("init engine");
 
-    // 1. Launcher bridge start -> OneHundo Active dispatched once
+    // Process scanner records last_process_scan_at even when no game is running
+    let _ = engine.poll_running_processes();
+    let initial_snap = engine.health_snapshot().unwrap();
+    assert!(initial_snap.last_process_scan_at.is_some());
+    assert!(initial_snap.active_trackings.is_empty());
+
+    // 1. Launcher bridge start -> OneHundo Active dispatched once & active_trackings populated
     engine
         .report_launcher_game(
             "recomp_launcher",
@@ -51,6 +57,10 @@ fn instant_game_active_notification_deduplicates_across_sessions_and_process_pol
         .expect("report active launcher game");
 
     let snap = engine.health_snapshot().unwrap();
+    assert_eq!(snap.active_trackings.len(), 1);
+    assert!(snap.active_trackings[0].source.contains("Launcher"));
+    assert_eq!(snap.active_trackings[0].detail, "longshot");
+
     let active_notifs: Vec<_> = snap
         .recent_notifications
         .iter()
@@ -66,7 +76,7 @@ fn instant_game_active_notification_deduplicates_across_sessions_and_process_pol
         active_notifs[0].body
     );
 
-    // 2. Repeated launcher heartbeat & IPC session for same game while active -> still 1
+    // 2. Repeated launcher heartbeat & IPC session for same game while active -> still 1 notification
     engine
         .report_launcher_game(
             "recomp_launcher",
@@ -102,6 +112,10 @@ fn instant_game_active_notification_deduplicates_across_sessions_and_process_pol
             .count(),
         1
     );
+    assert!(snap2
+        .active_trackings
+        .iter()
+        .any(|t| t.source == "Live game hook"));
     assert!(
         snap2
             .library_games
@@ -109,7 +123,7 @@ fn instant_game_active_notification_deduplicates_across_sessions_and_process_pol
             .any(|g| g.canonical_game_id == "nintendo.oot.longshot.pc" && g.active)
     );
 
-    // 3. Ending both launcher active state & session re-arms notification
+    // 3. Ending both launcher active state & session clears active_trackings and re-arms notification
     engine
         .report_launcher_game(
             "recomp_launcher",
@@ -123,6 +137,7 @@ fn instant_game_active_notification_deduplicates_across_sessions_and_process_pol
         )
         .expect("report launcher inactive");
     engine.end_session(&sess1.session_id);
+    assert!(engine.health_snapshot().unwrap().active_trackings.is_empty());
 
     let _ = engine.start_session(
         "sess-oot-2".to_string(),
@@ -172,7 +187,7 @@ fn desktop_backend_tray_autostart_auth_and_loopback_http() {
     let backend = DesktopBackend::from_test_engine(Arc::clone(&engine), autostart_file.clone())
         .expect("create test backend");
 
-    // 1. Initial tray state: SignInNeeded -> signed in -> Paused -> Quit
+    // 1. Initial tray state: SignInNeeded -> signed in (Idle) -> ActiveGame -> Paused -> Quit
     let snap0 = backend.fetch_snapshot().unwrap();
     let mut tray = TrayModel::new(
         snap0.tracking_paused,
@@ -181,6 +196,7 @@ fn desktop_backend_tray_autostart_auth_and_loopback_http() {
         true,
     );
     assert_eq!(tray.status, TrayStatus::SignInNeeded);
+    assert_eq!(tray.visual_state(), TrayVisualState::SignInNeeded);
     assert!(!tray.handle_window_close_requested()); // minimizes to tray
     assert!(!tray.window_visible);
     tray.handle_open_requested();
@@ -213,13 +229,36 @@ fn desktop_backend_tray_autostart_auth_and_loopback_http() {
     let snap1_json = serde_json::to_string(&snap1).unwrap();
     assert!(!snap1_json.contains(secret));
 
-    tray.sync_flags(
+    tray.sync_state(
         snap1.tracking_paused,
         snap1.account_signed_in,
         false,
         None,
+        None,
     );
     assert_eq!(tray.status, TrayStatus::TrackingActive);
+    assert_eq!(tray.visual_state(), TrayVisualState::Idle);
+
+    tray.sync_state(
+        false,
+        true,
+        false,
+        Some("Bloodborne".to_string()),
+        Some("Live game hook · bbport session".to_string()),
+    );
+    assert_eq!(tray.visual_state(), TrayVisualState::ActiveGame);
+    assert!(tray.tooltip_summary().contains("Bloodborne"));
+    assert!(tray.tooltip_detail().contains("bbport session"));
+    assert!(tray.menu_status_label().contains("Tracking: Bloodborne"));
+
+    tray.sync_state(
+        true,
+        true,
+        false,
+        Some("Bloodborne".to_string()),
+        Some("Live game hook · bbport session".to_string()),
+    );
+    assert_eq!(tray.visual_state(), TrayVisualState::Paused);
 
     // 4. Pause & resume gating over loopback HTTP + CSRF refusal
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -299,6 +338,7 @@ fn desktop_backend_tray_autostart_auth_and_loopback_http() {
 
     let snap2 = backend.fetch_snapshot().unwrap();
     assert!(snap2.recent_trophies.iter().any(|t| t.achievement_title == "Yharnam Sunrise"));
+    assert!(snap2.active_trackings.iter().any(|t| t.game_title.contains("Bloodborne")));
 
     let auth_status = http_request("GET", &format!("{}/auth/status", base), None, None, None)
         .unwrap();

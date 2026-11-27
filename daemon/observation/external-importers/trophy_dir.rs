@@ -63,10 +63,17 @@ fn resolve_game_id(
             let up = name.to_ascii_uppercase();
             if up.starts_with("CUSA")
                 || up.starts_with("NPWR")
+                || up.starts_with("NPJS")
                 || up.starts_with("BLUS")
                 || up.starts_with("BLES")
+                || up.starts_with("BLJM")
                 || up.starts_with("BCUS")
                 || up.starts_with("BCES")
+                || up.starts_with("BCJS")
+                || up.starts_with("PCSA")
+                || up.starts_with("PCSF")
+                || up.starts_with("PCSB")
+                || up.starts_with("PCSG")
             {
                 candidates.push(up);
             }
@@ -555,6 +562,139 @@ pub fn parse_trophy_json_bytes(
     })
 }
 
+fn resolve_jsonl_trophy_key(
+    trophy_id: u32,
+    canonical_game_id: &str,
+    packs: Option<&PackRegistry>,
+) -> String {
+    let psn_mapped = format!("a{:02}", trophy_id + 1);
+    if let Some(reg) = packs {
+        for pack in reg.packs_for_game_id(canonical_game_id) {
+            if pack
+                .manifest
+                .achievements
+                .iter()
+                .any(|a| a.canonical_achievement_id == psn_mapped)
+            {
+                return psn_mapped;
+            }
+        }
+    }
+    format!("trophy_{}", trophy_id)
+}
+
+pub fn parse_trophies_jsonl_bytes(
+    bytes: &[u8],
+    source_path: &Path,
+    packs: Option<&PackRegistry>,
+    opts: &ImportOptions,
+) -> Result<ParsedObservationSet, String> {
+    let artifact_hash = sha256_hex(bytes);
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| format!("trophies.jsonl '{}' is not UTF-8", source_path.display()))?;
+    let dir = source_path.parent().unwrap_or(source_path);
+    let label = source_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("trophies.jsonl");
+
+    let mut earliest: BTreeMap<(String, String), (u32, Option<String>)> = BTreeMap::new();
+    let mut parsed_lines = 0usize;
+
+    for raw_line in text.lines() {
+        let line = raw_line.trim().trim_start_matches('\u{feff}');
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(obj) = val.as_object() else {
+            continue;
+        };
+        let trophy_num = obj.get("trophy_id").or_else(|| obj.get("id")).and_then(|v| {
+            v.as_u64()
+                .and_then(|n| u32::try_from(n).ok())
+                .or_else(|| v.as_str().and_then(|s| s.trim().parse::<u32>().ok()))
+        });
+        let Some(tid_num) = trophy_num else {
+            continue;
+        };
+        parsed_lines += 1;
+
+        let title_id = obj
+            .get("title_id")
+            .or_else(|| obj.get("npcommid"))
+            .and_then(|v| v.as_str());
+        let gid = resolve_game_id(dir, title_id, packs, opts.canonical_game_id.as_deref());
+        let key = resolve_jsonl_trophy_key(tid_num, &gid, packs);
+        let ts = ["unlocked_at", "timestamp", "unlock_time", "unlocktime"]
+            .iter()
+            .find_map(|f| {
+                obj.get(*f).and_then(|v| {
+                    if let Some(u) = v.as_u64() {
+                        parse_cell_rtc_or_epoch(u)
+                    } else {
+                        parse_optional_timestamp(v)
+                    }
+                })
+            });
+
+        earliest
+            .entry((gid, key))
+            .and_modify(|(_, existing_ts)| match (existing_ts.as_ref(), ts.as_ref()) {
+                (None, Some(new_ts)) => *existing_ts = Some(new_ts.clone()),
+                (Some(cur), Some(new_ts)) if new_ts < cur => *existing_ts = Some(new_ts.clone()),
+                _ => {}
+            })
+            .or_insert((tid_num, ts));
+    }
+
+    if parsed_lines == 0 && !text.trim().is_empty() {
+        return Err(format!(
+            "trophies.jsonl '{}' contained no valid trophy entries",
+            source_path.display()
+        ));
+    }
+
+    let mode = resolve_mode(opts);
+    let mut records = Vec::with_capacity(earliest.len());
+    for ((gid, key), (tid_num, ts)) in earliest {
+        let seed = format!("trophies_jsonl:{}:{}:{}", gid, mode.as_str(), key);
+        let notes = format!(
+            "Observed from '{}' (trophy_id={})",
+            label, tid_num
+        );
+        records.push(ObservationRecord {
+            schema_version: "0.1.0".to_string(),
+            observation_id: deterministic_uuid_from_seed(&seed),
+            canonical_game_id: gid,
+            observer_id: "plane_c.bbport_trophies_jsonl".to_string(),
+            source_type: "psn_trophy".to_string(),
+            observed_at: now_rfc3339(),
+            source_timestamp: ts,
+            artifact_hash_sha256: Some(artifact_hash.clone()),
+            record_kind: "ACHIEVEMENT_EVIDENCE".to_string(),
+            key,
+            unlocked: Some(true),
+            int_value: Some(1),
+            float_value: None,
+            string_value: None,
+            progression_mode: mode,
+            trust_tier: TrustTier::Local,
+            evidence_class: EvidenceClass::LocallyObserved,
+            verification_state: VerificationState::Unverified,
+            provenance_notes: Some(notes),
+        });
+    }
+
+    Ok(ParsedObservationSet {
+        records,
+        skipped_locked: 0,
+        source_kind: "bbport_trophies_jsonl".to_string(),
+    })
+}
+
 pub fn parse_trophy_directory(
     dir: &Path,
     packs: Option<&PackRegistry>,
@@ -586,6 +726,13 @@ pub fn parse_trophy_directory(
         }
     }
 
+    let jsonl = dir.join("trophies.jsonl");
+    if jsonl.is_file() {
+        let bytes = fs::read(&jsonl)
+            .map_err(|e| format!("failed reading '{}': {}", jsonl.display(), e))?;
+        return parse_trophies_jsonl_bytes(&bytes, &jsonl, packs, opts);
+    }
+
     Err(format!(
         "no RPCS3/shadPS4 trophy files (TROPUSR.DAT, TROP.XML, trophies.json) found in '{}'",
         dir.display()
@@ -611,6 +758,8 @@ pub fn parse_trophy_file(
         parse_tropusr_dat_bytes(&bytes, dir, npcommid.as_deref(), &names, packs, opts)
     } else if fname.ends_with(".xml") || fname.ends_with(".sfm") {
         parse_trophy_xml_bytes(&bytes, path, packs, opts)
+    } else if fname == "trophies.jsonl" {
+        parse_trophies_jsonl_bytes(&bytes, path, packs, opts)
     } else {
         parse_trophy_json_bytes(&bytes, path, packs, opts)
     }

@@ -192,8 +192,12 @@ def build_all() -> list[Path]:
                         ],
                         "watch_paths": [
                             {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/savedata/**/SPRJ0005"},
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/trophy/**"},
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA03173/trophy/**"},
                             {"os": "steamos", "launcher": "shadps4", "path_glob": "~/.var/app/net.shadps4.shadPS4/data/shadPS4/user/savedata/**/SPRJ0005"},
+                            {"os": "steamos", "launcher": "shadps4", "path_glob": "~/.var/app/net.shadps4.shadPS4/data/shadPS4/user/trophy/**"},
                             {"os": "windows", "launcher": "shadps4", "path_glob": "%APPDATA%/shadPS4/user/savedata/**/SPRJ0005"},
+                            {"os": "windows", "launcher": "shadps4", "path_glob": "%APPDATA%/shadPS4/user/trophy/**"},
                             {"os": "macos", "launcher": "shadps4", "path_glob": "~/Library/Application Support/shadPS4/user/savedata/**/SPRJ0005"},
                         ],
                     },
@@ -448,6 +452,7 @@ def build_all() -> list[Path]:
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*fritchii*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*lichii*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*soh*", "os": "any"},
+                    {"matcher_type": "executable", "algorithm": "glob", "value": "*ShipOfHarkinian*", "os": "any"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/progress.sav", "os": "any"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/Save/file*.sav", "os": "any"},
                 ],
@@ -467,7 +472,11 @@ def build_all() -> list[Path]:
                         "watch_paths": [
                             {"os": "linux", "path_glob": "~/.local/share/longshot/**/progress.sav"},
                             {"os": "steamos", "path_glob": "~/.local/share/longshot/**/progress.sav"},
+                            {"os": "linux", "path_glob": "~/.local/share/soh/Save/**"},
+                            {"os": "linux", "path_glob": "~/.config/soh/Save/**"},
+                            {"os": "steamos", "path_glob": "~/.var/app/com.harbourmasters.ShipOfHarkinian/data/soh/Save/**"},
                             {"os": "windows", "path_glob": "%APPDATA%/Longshot/**/progress.sav"},
+                            {"os": "windows", "path_glob": "%APPDATA%/Ship of Harkinian/Save/**"},
                             {"os": "macos", "path_glob": "~/Library/Application Support/Ship of Harkinian/Save/**"},
                             {"os": "android", "path_glob": "/storage/emulated/0/Android/data/com.dishii.soh/files/Save/**"},
                         ],
@@ -542,6 +551,7 @@ def build_all() -> list[Path]:
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "2ship2harkinian", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*Zelda64Recompiled*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*2s2h*", "os": "any"},
+                    {"matcher_type": "executable", "algorithm": "glob", "value": "*2ship*", "os": "any"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/zelda64recomp_*.sav", "os": "any"},
                 ],
                 "profiles": {
@@ -553,8 +563,12 @@ def build_all() -> list[Path]:
                         "watch_paths": [
                             {"os": "linux", "path_glob": "~/.config/Zelda64Recompiled/saves/*"},
                             {"os": "steamos", "path_glob": "~/.var/app/io.github.zelda64recomp.Zelda64Recomp/config/Zelda64Recompiled/saves/*"},
+                            {"os": "linux", "path_glob": "~/.local/share/2ship2harkinian/Save/**"},
+                            {"os": "linux", "path_glob": "~/.config/2ship2harkinian/Save/**"},
                             {"os": "windows", "path_glob": "%LOCALAPPDATA%/Zelda64Recompiled/saves/*"},
+                            {"os": "windows", "path_glob": "%APPDATA%/2ship2harkinian/Save/**"},
                             {"os": "macos", "path_glob": "~/Library/Application Support/Zelda64Recompiled/saves/*"},
+                            {"os": "macos", "path_glob": "~/Library/Application Support/2ship2harkinian/Save/**"},
                         ],
                     },
                 },
@@ -628,8 +642,9 @@ def build_all() -> list[Path]:
                 "title": "The Legend of Zelda: Breath of the Wild",
                 "authors": ["OneHundoOrg"],
                 "matchers": [
-                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "00050000101C9400", "region": "USA", "launcher": "cemu"},
-                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "00050000101C9500", "region": "EUR", "launcher": "cemu"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "00050000101C9400", "region": "USA", "os": "any", "launcher": "cemu"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "00050000101C9500", "region": "EUR", "os": "any", "launcher": "cemu"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "00050000101C9300", "region": "JPN", "os": "any", "launcher": "cemu"},
                     {"matcher_type": "platform_id", "algorithm": "exact", "value": "01007EF00011E000", "region": "GLOBAL", "os": "any"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/game_data.sav", "os": "any"},
                 ],
@@ -641,6 +656,8 @@ def build_all() -> list[Path]:
                         "watch_paths": [
                             {"os": "windows", "launcher": "cemu", "path_glob": "%APPDATA%/Cemu/mlc01/usr/save/00050000/101c9*/user/**"},
                             {"os": "linux", "launcher": "cemu", "path_glob": "~/.local/share/Cemu/mlc01/usr/save/00050000/101c9*/user/**"},
+                            {"os": "linux", "launcher": "cemu", "path_glob": "~/.config/Cemu/mlc01/usr/save/00050000/101c9*/user/**"},
+                            {"os": "steamos", "launcher": "cemu", "path_glob": "~/.var/app/info.cemu.Cemu/data/Cemu/mlc01/usr/save/00050000/101c9*/user/**"},
                         ],
                     }
                 },
@@ -671,8 +688,9 @@ def build_all() -> list[Path]:
                 "title": "The Legend of Zelda: The Wind Waker HD",
                 "authors": ["OneHundoOrg"],
                 "matchers": [
-                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "0005000010143500", "region": "USA", "launcher": "cemu"},
-                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "0005000010143600", "region": "EUR", "launcher": "cemu"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "0005000010143500", "region": "USA", "os": "any", "launcher": "cemu"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "0005000010143600", "region": "EUR", "os": "any", "launcher": "cemu"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "0005000010143400", "region": "JPN", "os": "any", "launcher": "cemu"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/cking.sav", "os": "any"},
                 ],
                 "profiles": {
@@ -680,6 +698,12 @@ def build_all() -> list[Path]:
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/cking.sav"}],
+                        "watch_paths": [
+                            {"os": "windows", "launcher": "cemu", "path_glob": "%APPDATA%/Cemu/mlc01/usr/save/00050000/10143*/user/**"},
+                            {"os": "linux", "launcher": "cemu", "path_glob": "~/.local/share/Cemu/mlc01/usr/save/00050000/10143*/user/**"},
+                            {"os": "linux", "launcher": "cemu", "path_glob": "~/.config/Cemu/mlc01/usr/save/00050000/10143*/user/**"},
+                            {"os": "steamos", "launcher": "cemu", "path_glob": "~/.var/app/info.cemu.Cemu/data/Cemu/mlc01/usr/save/00050000/10143*/user/**"},
+                        ],
                     }
                 },
                 "achievements": [
@@ -724,6 +748,15 @@ def build_all() -> list[Path]:
                         "sources": [
                             {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/sm64_save_file.bin"},
                             {"source_type": "emulator_sram", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/Super Mario 64*.srm"},
+                        ],
+                        "watch_paths": [
+                            {"os": "linux", "path_glob": "~/.local/share/sm64ex/**"},
+                            {"os": "linux", "path_glob": "~/.config/sm64ex/**"},
+                            {"os": "linux", "path_glob": "~/.local/share/sm64coopdx/**"},
+                            {"os": "linux", "launcher": "retroarch", "path_glob": "~/.config/retroarch/saves/Super Mario 64*.srm"},
+                            {"os": "steamos", "launcher": "retroarch", "path_glob": "~/.var/app/org.libretro.RetroArch/config/retroarch/saves/Super Mario 64*.srm"},
+                            {"os": "windows", "path_glob": "%APPDATA%/sm64ex/**"},
+                            {"os": "windows", "path_glob": "%APPDATA%/sm64coopdx/**"},
                         ],
                     }
                 },
@@ -800,7 +833,7 @@ def build_all() -> list[Path]:
                 "authors": ["OneHundoOrg"],
                 "matchers": [
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "opengoal_jak1", "os": "any"},
-                    {"matcher_type": "executable", "algorithm": "glob", "value": "*gk*", "os": "any", "launcher": "opengoal"},
+                    {"matcher_type": "executable", "algorithm": "glob", "value": "*opengoal*jak1*", "os": "any", "launcher": "opengoal"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/OpenGOAL/jak1/saves/**", "os": "any"},
                 ],
                 "profiles": {
@@ -812,6 +845,7 @@ def build_all() -> list[Path]:
                         "watch_paths": [
                             {"os": "windows", "launcher": "opengoal", "path_glob": "%APPDATA%/OpenGOAL/jak1/saves/**"},
                             {"os": "linux", "launcher": "opengoal", "path_glob": "~/.config/OpenGOAL/jak1/saves/**"},
+                            {"os": "linux", "launcher": "opengoal", "path_glob": "~/.local/share/OpenGOAL/jak1/saves/**"},
                             {"os": "steamos", "launcher": "opengoal", "path_glob": "~/.config/OpenGOAL/jak1/saves/**"},
                         ],
                     },
@@ -897,7 +931,7 @@ def build_all() -> list[Path]:
                     "authors": ["OneHundoOrg"],
                     "matchers": [
                         {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": f"opengoal_{num}", "os": "any"},
-                        {"matcher_type": "executable", "algorithm": "glob", "value": "*gk*", "os": "any", "launcher": "opengoal"},
+                        {"matcher_type": "executable", "algorithm": "glob", "value": f"*opengoal*{num}*", "os": "any", "launcher": "opengoal"},
                         {"matcher_type": "save_path_glob", "algorithm": "glob", "value": f"**/OpenGOAL/{num}/saves/**", "os": "any"},
                     ],
                     "profiles": {
@@ -909,6 +943,7 @@ def build_all() -> list[Path]:
                             "watch_paths": [
                                 {"os": "windows", "launcher": "opengoal", "path_glob": f"%APPDATA%/OpenGOAL/{num}/saves/**"},
                                 {"os": "linux", "launcher": "opengoal", "path_glob": f"~/.config/OpenGOAL/{num}/saves/**"},
+                                {"os": "linux", "launcher": "opengoal", "path_glob": f"~/.local/share/OpenGOAL/{num}/saves/**"},
                                 {"os": "steamos", "launcher": "opengoal", "path_glob": f"~/.config/OpenGOAL/{num}/saves/**"},
                             ],
                         },
@@ -940,9 +975,9 @@ def build_all() -> list[Path]:
                 "title": "Demon's Souls",
                 "authors": ["OneHundoOrg"],
                 "matchers": [
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BLUS30443", "region": "USA", "launcher": "rpcs3"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BLES00932", "region": "EUR", "launcher": "rpcs3"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCJS30022", "region": "JPN", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BLUS30443", "region": "USA", "os": "any", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BLES00932", "region": "EUR", "os": "any", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCJS30022", "region": "JPN", "os": "any", "launcher": "rpcs3"},
                     {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "NPWR00572_00", "os": "any", "launcher": "rpcs3"},
                 ],
                 "profiles": {
@@ -952,6 +987,7 @@ def build_all() -> list[Path]:
                         "sources": [{"source_type": "trophy_dir", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/TROP*"}],
                         "watch_paths": [
                             {"os": "linux", "launcher": "rpcs3", "path_glob": "~/.config/rpcs3/dev_hdd0/home/*/trophy/NPWR00572_00"},
+                            {"os": "steamos", "launcher": "rpcs3", "path_glob": "~/.var/app/net.rpcs3.RPCS3/config/rpcs3/dev_hdd0/home/*/trophy/NPWR00572_00"},
                             {"os": "windows", "launcher": "rpcs3", "path_glob": "%APPDATA%/rpcs3/dev_hdd0/home/*/trophy/NPWR00572_00"},
                         ],
                     }
@@ -983,8 +1019,9 @@ def build_all() -> list[Path]:
                 "title": "Uncharted: Drake's Fortune",
                 "authors": ["OneHundoOrg"],
                 "matchers": [
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCUS98103", "region": "USA", "launcher": "rpcs3"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCES00065", "region": "EUR", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCUS98103", "region": "USA", "os": "any", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCES00065", "region": "EUR", "os": "any", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCJS30015", "region": "JPN", "os": "any", "launcher": "rpcs3"},
                     {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "NPWR00142_00", "os": "any", "launcher": "rpcs3"},
                 ],
                 "profiles": {
@@ -992,6 +1029,11 @@ def build_all() -> list[Path]:
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "trophy_dir", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/TROP*"}],
+                        "watch_paths": [
+                            {"os": "linux", "launcher": "rpcs3", "path_glob": "~/.config/rpcs3/dev_hdd0/home/*/trophy/NPWR00142_00"},
+                            {"os": "steamos", "launcher": "rpcs3", "path_glob": "~/.var/app/net.rpcs3.RPCS3/config/rpcs3/dev_hdd0/home/*/trophy/NPWR00142_00"},
+                            {"os": "windows", "launcher": "rpcs3", "path_glob": "%APPDATA%/rpcs3/dev_hdd0/home/*/trophy/NPWR00142_00"},
+                        ],
                     }
                 },
                 "achievements": [
@@ -1010,6 +1052,19 @@ def build_all() -> list[Path]:
     ))
 
     # 12a-b. Gravity Rush & Gravity Rush 2 (Vita3K / shadPS4 / Android)
+    gr_watch_paths = {
+        "sony.gravity_rush": [
+            {"os": "linux", "launcher": "vita3k", "path_glob": "~/.local/share/Vita3K/Vita3K/ux0/user/*/trophy/**"},
+            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA01130/trophy/**"},
+            {"os": "windows", "launcher": "vita3k", "path_glob": "%APPDATA%/Vita3K/ux0/user/*/trophy/**"},
+            {"os": "windows", "launcher": "shadps4", "path_glob": "%APPDATA%/shadPS4/user/game_data/CUSA01130/trophy/**"},
+        ],
+        "sony.gravity_rush_2": [
+            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA03694/trophy/**"},
+            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA04943/trophy/**"},
+            {"os": "windows", "launcher": "shadps4", "path_glob": "%APPDATA%/shadPS4/user/game_data/CUSA03694/trophy/**"},
+        ],
+    }
     for gid, fname, pid, title, plat_ids in [
         ("sony.gravity_rush", "sony.gravity_rush.onehundo", "sony.gravity_rush.starter", "Gravity Rush", ["PCSA00011", "PCSF00024", "CUSA01130"]),
         ("sony.gravity_rush_2", "sony.gravity_rush_2.onehundo", "sony.gravity_rush_2.starter", "Gravity Rush 2", ["CUSA03694", "CUSA04943"]),
@@ -1033,6 +1088,7 @@ def build_all() -> list[Path]:
                             "enabled": True,
                             "rules_file": "rules/save.json",
                             "sources": [{"source_type": "trophy_dir", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/TROP*"}],
+                            "watch_paths": gr_watch_paths[gid],
                         }
                     },
                     "achievements": [
@@ -1063,14 +1119,20 @@ def build_all() -> list[Path]:
                 "authors": ["OneHundoOrg"],
                 "matchers": [
                     {"matcher_type": "platform_id", "algorithm": "exact", "value": "0100F9F00C696000", "os": "any"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA13795", "region": "USA", "launcher": "shadps4"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA14876", "region": "EUR", "launcher": "shadps4"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA13795", "region": "USA", "os": "any", "launcher": "shadps4"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA14876", "region": "EUR", "os": "any", "launcher": "shadps4"},
                 ],
                 "profiles": {
                     "observation": {
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/CTR*"}],
+                        "watch_paths": [
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/savedata/**/CUSA13795"},
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/savedata/**/CUSA14876"},
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA13795/trophy/**"},
+                            {"os": "windows", "launcher": "shadps4", "path_glob": "%APPDATA%/shadPS4/user/savedata/**/CUSA13795"},
+                        ],
                     }
                 },
                 "achievements": [
@@ -1100,15 +1162,25 @@ def build_all() -> list[Path]:
                 "title": "Shadow of the Colossus",
                 "authors": ["OneHundoOrg"],
                 "matchers": [
-                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "SCUS-97472", "region": "USA", "launcher": "pcsx2"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCUS98289", "region": "USA", "launcher": "rpcs3"},
-                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA08034", "region": "USA", "launcher": "shadps4"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "SCUS-97472", "region": "USA", "os": "any", "launcher": "pcsx2"},
+                    {"matcher_type": "platform_id", "algorithm": "exact", "value": "SCES-53326", "region": "EUR", "os": "any", "launcher": "pcsx2"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "BCUS98289", "region": "USA", "os": "any", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "NPWR01189_00", "os": "any", "launcher": "rpcs3"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA08034", "region": "USA", "os": "any", "launcher": "shadps4"},
+                    {"matcher_type": "platform_id", "algorithm": "psn_title_id", "value": "CUSA08804", "region": "EUR", "os": "any", "launcher": "shadps4"},
                 ],
                 "profiles": {
                     "observation": {
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "trophy_dir", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/TROP*"}],
+                        "watch_paths": [
+                            {"os": "linux", "launcher": "rpcs3", "path_glob": "~/.config/rpcs3/dev_hdd0/home/*/trophy/NPWR01189_00"},
+                            {"os": "steamos", "launcher": "rpcs3", "path_glob": "~/.var/app/net.rpcs3.RPCS3/config/rpcs3/dev_hdd0/home/*/trophy/NPWR01189_00"},
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA08034/trophy/**"},
+                            {"os": "linux", "launcher": "shadps4", "path_glob": "~/.local/share/shadPS4/user/game_data/CUSA08804/trophy/**"},
+                            {"os": "windows", "launcher": "rpcs3", "path_glob": "%APPDATA%/rpcs3/dev_hdd0/home/*/trophy/NPWR01189_00"},
+                        ],
                     }
                 },
                 "achievements": [
@@ -1127,9 +1199,9 @@ def build_all() -> list[Path]:
     ))
 
     # 15a-b. Sonic Adventure & Sonic Adventure 2
-    for gid, fname, pid, title, steam_id, exe in [
-        ("sega.sonic_adventure", "sega.sonic_adventure.onehundo", "sega.sa1.starter", "Sonic Adventure", "71250", "*Sonic Adventure DX*"),
-        ("sega.sonic_adventure_2", "sega.sonic_adventure_2.onehundo", "sega.sa2.starter", "Sonic Adventure 2", "213610", "*sonic2app*"),
+    for gid, fname, pid, title, steam_id, exes in [
+        ("sega.sonic_adventure", "sega.sonic_adventure.onehundo", "sega.sa1.starter", "Sonic Adventure", "71250", ["*Sonic Adventure DX*", "*SonicAdventure*", "*SADX*", "sonic.exe"]),
+        ("sega.sonic_adventure_2", "sega.sonic_adventure_2.onehundo", "sega.sa2.starter", "Sonic Adventure 2", "213610", ["*sonic2app*", "*SonicAdventure2*", "*Sonic Adventure 2*"]),
     ]:
         created.append(write_onehundo(
             fname,
@@ -1143,7 +1215,10 @@ def build_all() -> list[Path]:
                     "authors": ["OneHundoOrg"],
                     "matchers": [
                         {"matcher_type": "app_id", "algorithm": "steam_appid", "value": steam_id, "os": "any"},
-                        {"matcher_type": "executable", "algorithm": "glob", "value": exe, "os": "any"},
+                        *[
+                            {"matcher_type": "executable", "algorithm": "glob", "value": exe, "os": "any"}
+                            for exe in exes
+                        ],
                         {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/*SONICADV*", "os": "any"},
                     ],
                     "profiles": {
@@ -1153,6 +1228,14 @@ def build_all() -> list[Path]:
                             "sources": [
                                 {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/*SONICADV*"},
                                 {"source_type": "goldberg_json", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/achievements.json"},
+                            ],
+                            "watch_paths": [
+                                {"os": "linux", "path_glob": f"~/.local/share/Goldberg SteamEmu Saves/{steam_id}/**"},
+                                {"os": "linux", "path_glob": f"~/.local/share/GSE Saves/{steam_id}/**"},
+                                {"os": "linux", "launcher": "steam", "path_glob": f"~/.local/share/Steam/steamapps/compatdata/{steam_id}/pfx/drive_c/users/steamuser/AppData/Roaming/*SteamEmu Saves/**"},
+                                {"os": "linux", "launcher": "steam", "path_glob": f"~/.local/share/Steam/steamapps/compatdata/{steam_id}/pfx/drive_c/users/steamuser/AppData/Roaming/GSE Saves/**"},
+                                {"os": "windows", "path_glob": f"%APPDATA%/Goldberg SteamEmu Saves/{steam_id}/**"},
+                                {"os": "windows", "path_glob": f"%APPDATA%/GSE Saves/{steam_id}/**"},
                             ],
                         }
                     },
@@ -1187,14 +1270,25 @@ def build_all() -> list[Path]:
                     "title": title,
                     "authors": ["OneHundoOrg"],
                     "matchers": [
-                        {"matcher_type": "platform_id", "algorithm": "exact", "value": code, "launcher": "dolphin"}
-                        for code in codes
+                        *[
+                            {"matcher_type": "platform_id", "algorithm": "exact", "value": code, "os": "any", "launcher": "dolphin"}
+                            for code in codes
+                        ],
+                        *[
+                            {"matcher_type": "save_path_glob", "algorithm": "glob", "value": f"**/GC/**/*{code[:4]}*.gci", "os": "any", "launcher": "dolphin"}
+                            for code in codes
+                        ],
                     ],
                     "profiles": {
                         "observation": {
                             "enabled": True,
                             "rules_file": "rules/save.json",
                             "sources": [{"source_type": "emulator_sram", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/*.gci"}],
+                            "watch_paths": [
+                                {"os": "linux", "launcher": "dolphin", "path_glob": "~/.local/share/dolphin-emu/GC/**"},
+                                {"os": "steamos", "launcher": "dolphin", "path_glob": "~/.var/app/org.DolphinEmu.dolphin-emu/data/dolphin-emu/GC/**"},
+                                {"os": "windows", "launcher": "dolphin", "path_glob": "%USERPROFILE%/Documents/Dolphin Emulator/GC/**"},
+                            ],
                         }
                     },
                     "achievements": [
@@ -1234,6 +1328,11 @@ def build_all() -> list[Path]:
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/starship_save*.json"}],
+                        "watch_paths": [
+                            {"os": "linux", "path_glob": "~/.local/share/Starship/**"},
+                            {"os": "linux", "path_glob": "~/.config/Starship/**"},
+                            {"os": "windows", "path_glob": "%APPDATA%/Starship/**"},
+                        ],
                     },
                 },
                 "achievements": [
@@ -1265,6 +1364,7 @@ def build_all() -> list[Path]:
                 "matchers": [
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "banjorecomp", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*BanjoRecomp*", "os": "any"},
+                    {"matcher_type": "executable", "algorithm": "glob", "value": "*Banjo*Recomp*", "os": "any"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/BanjoRecomp/**/saves/*", "os": "any"},
                 ],
                 "profiles": {
@@ -1272,6 +1372,12 @@ def build_all() -> list[Path]:
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/*.eep"}],
+                        "watch_paths": [
+                            {"os": "linux", "path_glob": "~/.config/BanjoRecompiled/saves/*"},
+                            {"os": "linux", "path_glob": "~/.local/share/BanjoRecompiled/saves/*"},
+                            {"os": "steamos", "path_glob": "~/.var/app/io.github.banjorecomp.BanjoRecomp/config/BanjoRecompiled/saves/*"},
+                            {"os": "windows", "path_glob": "%LOCALAPPDATA%/BanjoRecompiled/saves/*"},
+                        ],
                     }
                 },
                 "achievements": [
@@ -1309,6 +1415,11 @@ def build_all() -> list[Path]:
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [{"source_type": "emulator_sram", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/*.eep"}],
+                        "watch_paths": [
+                            {"os": "linux", "launcher": "mupen64plus", "path_glob": "~/.local/share/mupen64plus/save/**"},
+                            {"os": "linux", "launcher": "retroarch", "path_glob": "~/.config/retroarch/saves/Donkey Kong 64*.eep"},
+                            {"os": "steamos", "launcher": "retroarch", "path_glob": "~/.var/app/org.libretro.RetroArch/config/retroarch/saves/Donkey Kong 64*.eep"},
+                        ],
                     }
                 },
                 "achievements": [

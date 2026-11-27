@@ -5,14 +5,18 @@ use crate::ui::desktop::backend::{BackendActionResult, DesktopBackend};
 use crate::ui::desktop::theme::{
     apply_grid_theme, display_font, empty_state, grid_card, muted_label, primary_button,
     progress_bar, secondary_button, section_heading, semibold_font, status_badge, subtle_button,
-    toggle_switch, wordmark_square, ERROR, GILT, INK, INK_2, INK_3, LINE, SURFACE, SURFACE_2, TEAL,
-    WARNING,
+    toggle_switch, wordmark_square, ERROR, GILT, INK, INK_2, INK_3, LINE, LINE_STRONG, PAPER,
+    SURFACE, SURFACE_2, TEAL, WARNING,
 };
-use crate::ui::desktop::tray::{spawn_platform_tray, TrayCommand, TrayHandle, TrayModel, TrayStatus};
-use eframe::egui::{self, Align, Color32, CornerRadius, Margin, RichText, ScrollArea, Stroke, Vec2};
+use crate::ui::desktop::tray::{
+    spawn_platform_tray, TrayCommand, TrayHandle, TrayModel,
+};
+use eframe::egui::{self, Align, CornerRadius, Margin, RichText, ScrollArea, Stroke, Vec2};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +27,7 @@ enum Tab {
 }
 
 pub struct OneHundoApp {
-    backend: Option<DesktopBackend>,
+    backend: Option<Arc<DesktopBackend>>,
     snapshot: Option<GameHealthSnapshot>,
     snapshot_error: Option<String>,
     last_refresh: Instant,
@@ -33,8 +37,10 @@ pub struct OneHundoApp {
     // Tray & window visibility state
     tray_model: TrayModel,
     tray_rx: Receiver<TrayCommand>,
-    tray_handle: Option<TrayHandle>,
+    tray_handle: Option<Arc<TrayHandle>>,
     tray_ctx_holder: Arc<Mutex<Option<egui::Context>>>,
+    tray_stop: Arc<AtomicBool>,
+    tray_thread: Option<JoinHandle<()>>,
 
     // Library / folders state
     selected_game_for_folder: String, // "" => Auto-detect
@@ -56,19 +62,70 @@ impl OneHundoApp {
     ) -> Self {
         apply_grid_theme(&cc.egui_ctx);
 
+        let backend = Arc::new(backend);
         let snapshot = backend.fetch_snapshot().ok();
         let paused = snapshot.as_ref().map(|s| s.tracking_paused).unwrap_or(false);
         let signed_in = snapshot.as_ref().map(|s| s.account_signed_in).unwrap_or(false);
         let launch_at_login = backend.is_launch_at_login();
+        let (active_label, active_detail) = snapshot
+            .as_ref()
+            .map(Self::extract_active_tray_info)
+            .unwrap_or((None, None));
 
         let (tray_tx, tray_rx) = mpsc::channel();
-        let tray_model = TrayModel::new(paused, signed_in, launch_at_login, !start_minimized);
+        let mut tray_model = TrayModel::new(paused, signed_in, launch_at_login, !start_minimized);
+        tray_model.sync_state(paused, signed_in, launch_at_login, active_label, active_detail);
         let tray_ctx_holder = Arc::new(Mutex::new(Some(cc.egui_ctx.clone())));
         let tray_handle = spawn_platform_tray(
             tray_model.clone(),
             tray_tx,
             Arc::clone(&tray_ctx_holder),
-        );
+        )
+        .map(Arc::new);
+
+        let tray_stop = Arc::new(AtomicBool::new(false));
+        let tray_thread = tray_handle.as_ref().and_then(|handle| {
+            let stop_flag = Arc::clone(&tray_stop);
+            let bg_backend = Arc::clone(&backend);
+            let bg_handle = Arc::clone(handle);
+            let bg_ctx = Arc::clone(&tray_ctx_holder);
+            let mut tracked = tray_model.clone();
+            std::thread::Builder::new()
+                .name("onehundo-tray-sync".to_string())
+                .spawn(move || {
+                    while !stop_flag.load(Ordering::Relaxed) {
+                        for _ in 0..6 {
+                            std::thread::sleep(Duration::from_millis(250));
+                            if stop_flag.load(Ordering::Relaxed) {
+                                return;
+                            }
+                        }
+                        if let Ok(snap) = bg_backend.fetch_snapshot() {
+                            let (label, detail) = Self::extract_active_tray_info(&snap);
+                            let launch = bg_backend.is_launch_at_login();
+                            let changed = tracked.paused != snap.tracking_paused
+                                || tracked.signed_in != snap.account_signed_in
+                                || tracked.launch_at_login != launch
+                                || tracked.active_game_label != label
+                                || tracked.active_tracking_detail != detail;
+                            if changed {
+                                tracked.sync_state(
+                                    snap.tracking_paused,
+                                    snap.account_signed_in,
+                                    launch,
+                                    label,
+                                    detail,
+                                );
+                                bg_handle.update(&tracked);
+                                if let Some(ctx) = bg_ctx.lock().unwrap().as_ref() {
+                                    ctx.request_repaint();
+                                }
+                            }
+                        }
+                    }
+                })
+                .ok()
+        });
 
         Self {
             backend: Some(backend),
@@ -81,6 +138,8 @@ impl OneHundoApp {
             tray_rx,
             tray_handle,
             tray_ctx_holder,
+            tray_stop,
+            tray_thread,
             selected_game_for_folder: String::new(),
             library_filter: String::new(),
             folder_picker_rx: None,
@@ -101,18 +160,35 @@ impl OneHundoApp {
         ));
     }
 
+    fn extract_active_tray_info(snap: &GameHealthSnapshot) -> (Option<String>, Option<String>) {
+        if snap.tracking_paused {
+            return (None, None);
+        }
+        if let Some(target) = snap.active_trackings.first() {
+            return (
+                Some(target.game_title.clone()),
+                Some(format!("{} · {}", target.source, target.detail)),
+            );
+        }
+        if let Some(game) = Self::active_game_from_snapshot(snap) {
+            return (Some(game.title), Some(game.edition_or_pack));
+        }
+        (None, None)
+    }
+
     fn refresh_snapshot(&mut self) {
         let Some(ref backend) = self.backend else {
             return;
         };
         match backend.fetch_snapshot() {
             Ok(snap) => {
-                let active_label = Self::active_game_from_snapshot(&snap).map(|g| g.title);
-                self.tray_model.sync_flags(
+                let (active_label, active_detail) = Self::extract_active_tray_info(&snap);
+                self.tray_model.sync_state(
                     snap.tracking_paused,
                     snap.account_signed_in,
                     self.launch_at_login,
                     active_label,
+                    active_detail,
                 );
                 if let Some(ref handle) = self.tray_handle {
                     handle.update(&self.tray_model);
@@ -133,6 +209,19 @@ impl OneHundoApp {
         }
         if let Some(active) = snap.library_games.iter().find(|g| g.active) {
             return Some(active.clone());
+        }
+        if let Some(target) = snap.active_trackings.first() {
+            return Some(LibraryGameProgress {
+                canonical_game_id: target.canonical_game_id.clone(),
+                pack_id: target.pack_id.clone(),
+                title: target.game_title.clone(),
+                mapped_oap_edition: None,
+                unlocked_count: target.unlocked_count,
+                total_achievements: target.total_achievements,
+                completion_percent: target.completion_percent,
+                active: true,
+                edition_or_pack: target.edition_or_pack.clone(),
+            });
         }
         if let Some(sess) = snap.sessions.iter().find(|s| s.active) {
             if let Some(lib) = snap
@@ -330,36 +419,39 @@ impl OneHundoApp {
     }
 
     fn render_header(&mut self, ui: &mut egui::Ui) {
+        // Register the whole title-bar surface first. Child controls below keep their own
+        // hit targets, while empty header space remains a reliable window drag handle.
+        let drag_rect = egui::Rect::from_min_size(
+            ui.cursor().min,
+            Vec2::new(ui.available_width(), 52.0),
+        );
+        let drag = ui.interact(
+            drag_rect,
+            ui.scope_id().with("titlebar_drag"),
+            egui::Sense::click_and_drag(),
+        );
+        if drag.drag_started() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
         egui::Frame::new()
             .fill(SURFACE)
             .stroke(Stroke::new(1.0, LINE))
-            .inner_margin(Margin::symmetric(24, 14))
+            .inner_margin(Margin::symmetric(18, 8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     wordmark_square(ui);
-                    ui.add_space(28.0);
+                    ui.add_space(18.0);
 
                     for (tab, label) in [
                         (Tab::Status, "Status"),
                         (Tab::Library, "Library"),
-                        (Tab::Account, "Account"),
                     ] {
                         let active = self.tab == tab;
-                        let text_color = if active { INK } else { INK_2 };
-                        let btn = egui::Button::new(
-                            RichText::new(label)
-                                .font(semibold_font(13.5))
-                                .color(text_color),
-                        )
-                        .fill(if active { SURFACE_2 } else { Color32::TRANSPARENT })
-                        .stroke(Stroke::NONE)
-                        .corner_radius(CornerRadius::ZERO)
-                        .min_size(Vec2::new(72.0, 32.0));
-                        let resp = ui.add(btn);
+                        let resp = header_menu_button(ui, label, active, 66.0, 32.0);
                         if active {
                             ui.painter().line_segment(
                                 [resp.rect.left_bottom(), resp.rect.right_bottom()],
-                                Stroke::new(2.0, GILT),
+                                Stroke::new(2.0, INK),
                             );
                         }
                         if resp.clicked() {
@@ -368,12 +460,30 @@ impl OneHundoApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                        let dot_color = match self.tray_model.status {
-                            TrayStatus::TrackingActive => TEAL,
-                            TrayStatus::Paused => WARNING,
-                            TrayStatus::SignInNeeded => INK_3,
-                        };
-                        status_badge(ui, self.tray_model.status.label(), dot_color);
+                        // The window buttons live in the custom title bar. Account stays the
+                        // right-most navigation item, matching the platform header.
+                        let close = header_window_button(ui, "×", 19.0);
+                        if close.clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        let maximize = header_window_button(ui, "□", 14.0);
+                        if maximize.clicked() {
+                            let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
+                        }
+                        let minimize = header_window_button(ui, "−", 17.0);
+                        if minimize.clicked() {
+                            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        }
+
+                        let username = self.snapshot.as_ref()
+                            .and_then(|s| s.account_username.as_deref());
+                        let account_label = username.map(|name| truncate_chars(name, 10)).unwrap_or_else(|| "Account".to_string());
+                        let account = header_menu_button(ui, &account_label, self.tab == Tab::Account, 92.0, 32.0);
+                        if account.clicked() {
+                            self.tab = Tab::Account;
+                        }
+
                     });
                 });
             });
@@ -406,57 +516,42 @@ impl OneHundoApp {
         let snap = self.snapshot.clone();
         let paused = snap.as_ref().map(|s| s.tracking_paused).unwrap_or(false);
         let active_game = snap.as_ref().and_then(Self::active_game_from_snapshot);
+        let is_actively_tracking = !paused && active_game.is_some();
 
         // Hero status card
         let hero_accent = if paused {
             Some(WARNING)
-        } else if active_game.is_some() {
-            Some(GILT)
+        } else if is_actively_tracking {
+            Some(TEAL)
         } else {
-            None
+            Some(LINE_STRONG)
         };
 
         grid_card(ui, hero_accent, |ui| {
             ui.set_width(ui.available_width());
             if paused {
                 ui.label(
-                    RichText::new("PAUSED")
-                        .font(semibold_font(11.0))
-                        .color(WARNING)
-                        .extra_letter_spacing(1.0),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Achievement tracking is paused")
+                    RichText::new("Tracking paused")
                         .font(display_font(24.0))
                         .color(INK),
                 );
-                ui.add_space(6.0);
-                muted_label(
-                    ui,
-                    "Resume tracking when you want OneHundo to detect games and record unlocks.",
-                );
-                ui.add_space(16.0);
-                if primary_button(ui, "Resume Tracking").clicked() {
-                    self.toggle_pause();
-                }
+                ui.add_space(4.0);
+                muted_label(ui, "Resume tracking to detect games and saves.");
             } else if let Some(ref game) = active_game {
                 ui.horizontal(|ui| {
+                    let (dot, _) =
+                        ui.allocate_exact_size(Vec2::splat(7.0), egui::Sense::hover());
+                    ui.painter().rect_filled(dot, CornerRadius::ZERO, TEAL);
                     ui.label(
-                        RichText::new("NOW PLAYING")
-                            .font(semibold_font(11.0))
-                            .color(GILT)
-                            .extra_letter_spacing(1.0),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        RichText::new(&game.edition_or_pack)
-                            .size(12.0)
-                            .color(INK_2),
+                        RichText::new("Tracking")
+                            .font(semibold_font(13.0))
+                            .color(INK),
                     );
                 });
                 ui.add_space(6.0);
-                ui.label(RichText::new(&game.title).font(display_font(26.0)).color(INK));
+                ui.label(RichText::new(&game.title).font(display_font(24.0)).color(INK));
+                ui.add_space(12.0);
+
                 ui.add_space(14.0);
 
                 ui.horizontal(|ui| {
@@ -473,27 +568,27 @@ impl OneHundoApp {
                             .font(semibold_font(14.0))
                             .color(INK),
                     );
+                    ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                        let sync_note = match snap.as_ref() {
+                            Some(s) if s.account_signed_in && s.sync_queue_depth > 0 => {
+                                format!("{} queued to sync", s.sync_queue_depth)
+                            }
+                            Some(s) if s.account_signed_in => "Auto-sync active".to_string(),
+                            _ => "Saved locally · Sign in to sync".to_string(),
+                        };
+                        ui.label(RichText::new(sync_note).size(12.0).color(INK_2));
+                    });
                 });
                 ui.add_space(8.0);
                 progress_bar(ui, game.unlocked_count, game.total_achievements.max(1), 8.0);
             } else {
                 ui.label(
-                    RichText::new("READY")
-                        .font(semibold_font(11.0))
-                        .color(TEAL)
-                        .extra_letter_spacing(1.0),
-                );
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new("Ready — Launch any supported game")
+                    RichText::new("No game detected")
                         .font(display_font(24.0))
                         .color(INK),
                 );
-                ui.add_space(6.0);
-                muted_label(
-                    ui,
-                    "Launch a supported port, recompilation, RetroArch core, or emulator and OneHundo will confirm automatically.",
-                );
+                ui.add_space(4.0);
+                muted_label(ui, "Waiting for a supported game.");
             }
         });
 
@@ -552,18 +647,7 @@ impl OneHundoApp {
         // Recent Unlocks
         grid_card(ui, None, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                section_heading(ui, "Recent Unlocks");
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    if let Some(ref s) = snap {
-                        ui.label(
-                            RichText::new(format!("{} games ready", s.library_games.len()))
-                                .size(12.5)
-                                .color(INK_2),
-                        );
-                    }
-                });
-            });
+            section_heading(ui, "Recent Unlocks");
             ui.add_space(10.0);
 
             let recent = snap
@@ -574,31 +658,53 @@ impl OneHundoApp {
                 empty_state(
                     ui,
                     "No recent unlocks yet",
-                    "Your unlocked achievements will appear here as you play.",
+                    "Unlocks will appear here.",
                 );
             } else {
-                for (idx, item) in recent.iter().take(5).enumerate() {
+                for (idx, item) in recent.iter().take(3).enumerate() {
                     if idx > 0 {
                         ui.separator();
                     }
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(&item.achievement_title)
-                                    .font(semibold_font(13.5))
-                                    .color(INK),
+                    let row_width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(row_width, 44.0),
+                        egui::Layout::left_to_right(Align::Center),
+                        |row| {
+                            let text_width = (row_width - 96.0).max(80.0);
+                            row.allocate_ui_with_layout(
+                                Vec2::new(text_width, 42.0),
+                                egui::Layout::top_down(Align::Min),
+                                |text| {
+                                    text.add_sized(
+                                        Vec2::new(text_width, 21.0),
+                                        egui::Label::new(
+                                            RichText::new(&item.achievement_title)
+                                                .font(semibold_font(13.0))
+                                                .color(INK),
+                                        ).truncate(),
+                                    );
+                                    text.add_sized(
+                                        Vec2::new(text_width, 18.0),
+                                        egui::Label::new(
+                                            RichText::new(&item.game_title).size(12.0).color(INK_2),
+                                        ).truncate(),
+                                    );
+                                },
                             );
-                            ui.label(RichText::new(&item.game_title).size(12.0).color(INK_2));
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                            let when = item
-                                .unlocked_at
-                                .as_deref()
-                                .map(|s| s.split('T').next().unwrap_or(s))
-                                .unwrap_or("Local");
-                            ui.label(RichText::new(when).size(12.0).color(INK_3));
-                        });
-                    });
+                            row.with_layout(egui::Layout::right_to_left(Align::Center), |date| {
+                                let when = item
+                                    .unlocked_at
+                                    .as_deref()
+                                    .map(|s| s.split('T').next().unwrap_or(s))
+                                    .unwrap_or("Local");
+                                date.add_sized(
+                                    Vec2::new(84.0, 18.0),
+                                    egui::Label::new(RichText::new(when).size(11.5).color(INK_3))
+                                        .truncate(),
+                                );
+                            });
+                        },
+                    );
                 }
             }
         });
@@ -633,7 +739,7 @@ impl OneHundoApp {
             ui.add_space(6.0);
             muted_label(
                 ui,
-                "Add custom install or save directories for non-standard game locations.",
+                "Running games are detected automatically. Add custom install or save folders below for non-standard locations.",
             );
             ui.add_space(10.0);
 
@@ -768,17 +874,25 @@ impl OneHundoApp {
                             ui.vertical(|ui| {
                                 ui.horizontal(|ui| {
                                     if g.active {
-                                        ui.label(
-                                            RichText::new("●")
-                                                .size(11.0)
-                                                .color(TEAL),
+                                        let (dot, _) = ui.allocate_exact_size(
+                                            Vec2::splat(7.0),
+                                            egui::Sense::hover(),
                                         );
+                                        ui.painter().rect_filled(dot, CornerRadius::ZERO, TEAL);
                                     }
                                     ui.label(
                                         RichText::new(&g.title)
                                             .font(semibold_font(14.0))
                                             .color(INK),
                                     );
+                                    if g.active {
+                                        ui.label(
+                                            RichText::new("TRACKING")
+                                                .font(semibold_font(10.5))
+                                                .color(TEAL)
+                                                .extra_letter_spacing(0.8),
+                                        );
+                                    }
                                 });
                                 ui.label(
                                     RichText::new(&g.edition_or_pack)
@@ -1008,8 +1122,12 @@ impl OneHundoApp {
                     );
                     let mode_desc = match active_mode {
                         ProgressionMode::Standard => "Standard — Normal persistent unlocks.",
-                        ProgressionMode::Encore => "Encore — Record replay runs while keeping first unlocks.",
-                        ProgressionMode::Spectator => "Spectator — Notifications only; never alters progress.",
+                        ProgressionMode::Encore => {
+                            "Encore — Record replay runs while keeping first unlocks."
+                        }
+                        ProgressionMode::Spectator => {
+                            "Spectator — Notifications only; never alters progress."
+                        }
                     };
                     muted_label(ui, mode_desc);
                 });
@@ -1051,6 +1169,51 @@ impl OneHundoApp {
     }
 }
 
+fn header_menu_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: bool,
+    width: f32,
+    height: f32,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), egui::Sense::click());
+    let fill = if selected || response.hovered() { SURFACE_2 } else { SURFACE };
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        semibold_font(13.0),
+        if selected { INK } else { INK_2 },
+    );
+    response
+}
+
+fn header_window_button(ui: &mut egui::Ui, label: &str, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(34.0, 32.0), egui::Sense::click());
+    if response.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::ZERO, SURFACE_2);
+    }
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(size),
+        if response.hovered() { INK } else { INK_2 },
+    );
+    response
+}
+
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let collected: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}…", collected.trim_end())
+    } else {
+        collected
+    }
+}
+
 impl eframe::App for OneHundoApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.process_tray_and_async(ctx);
@@ -1071,7 +1234,7 @@ impl eframe::App for OneHundoApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(super::theme::PAPER)
+                    .fill(PAPER)
                     .inner_margin(Margin::same(24)),
             )
             .show(ui, |ui| {
@@ -1098,6 +1261,10 @@ impl eframe::App for OneHundoApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.tray_stop.store(true, Ordering::SeqCst);
+        if let Some(t) = self.tray_thread.take() {
+            let _ = t.join();
+        }
         if let Some(backend) = self.backend.take() {
             backend.shutdown();
         }

@@ -101,6 +101,20 @@ pub struct LibraryGameProgress {
     pub edition_or_pack: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActiveTrackingTarget {
+    pub canonical_game_id: String,
+    pub pack_id: String,
+    pub game_title: String,
+    #[serde(default)]
+    pub edition_or_pack: String,
+    pub source: String,
+    pub detail: String,
+    pub unlocked_count: usize,
+    pub total_achievements: usize,
+    pub completion_percent: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecentTrophyItem {
     pub canonical_game_id: String,
@@ -144,6 +158,12 @@ pub struct GameHealthSnapshot {
     pub installed_packs: Vec<PackSummary>,
     #[serde(default)]
     pub library_games: Vec<LibraryGameProgress>,
+    #[serde(default)]
+    pub active_trackings: Vec<ActiveTrackingTarget>,
+    #[serde(default)]
+    pub last_process_scan_at: Option<String>,
+    #[serde(default)]
+    pub last_watch_scan_at: Option<String>,
     #[serde(default)]
     pub recent_trophies: Vec<RecentTrophyItem>,
     #[serde(default)]

@@ -16,6 +16,7 @@ pub fn launch_desktop_gui(start_minimized: bool) -> Result<(), String> {
         .with_title("OneHundo")
         .with_inner_size([860.0, 620.0])
         .with_min_inner_size([680.0, 480.0])
+        .with_decorations(false)
         .with_visible(!start_minimized);
 
     if let Some(icon) = load_app_icon() {
