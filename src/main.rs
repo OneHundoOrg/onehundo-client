@@ -34,9 +34,13 @@ fn install_signal_handlers() {
 #[cfg(not(unix))]
 fn install_signal_handlers() {}
 
+fn print_version() {
+    println!("onehundod v{}", env!("CARGO_PKG_VERSION"));
+}
+
 fn print_help() {
     println!(
-        "onehundod v0.1.0 - OneHundo Local Daemon\n\n\
+        "onehundod v{} - OneHundo Local Daemon\n\n\
          OPTIONS:\n\
          \t--socket <path>           Unix socket path (default: $XDG_RUNTIME_DIR/onehundo.sock or /tmp/onehundo.sock)\n\
          \t--lock-file <path>        Single-instance lockfile path (default: $XDG_RUNTIME_DIR/onehundod.lock)\n\
@@ -54,7 +58,9 @@ fn print_help() {
          \t--api-key <key>           Save API key into credentials.json (never logged)\n\
          \t--sync-interval-ms <n>    Background sync interval in ms (default: 2500)\n\
          \t--no-notify               Disable OS notify-send desktop toasts\n\
-         \t-h, --help                Print help"
+         \t-V, --version             Print version\n\
+         \t-h, --help                Print help",
+        env!("CARGO_PKG_VERSION")
     );
 }
 
@@ -74,6 +80,10 @@ fn main() {
         match args[i].as_str() {
             "-h" | "--help" => {
                 print_help();
+                return;
+            }
+            "-V" | "--version" => {
+                print_version();
                 return;
             }
             "--socket" if i + 1 < args.len() => {

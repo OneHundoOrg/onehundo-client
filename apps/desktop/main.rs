@@ -21,9 +21,13 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_HEALTH_URL: &str = "http://127.0.0.1:19850";
 
+fn print_version() {
+    println!("onehundo-desktop v{}", env!("CARGO_PKG_VERSION"));
+}
+
 fn print_usage() {
     println!(
-        "onehundo-desktop v0.1.0 - Desktop Service & Game Health CLI\n\n\
+        "onehundo-desktop v{} - Desktop Service & Game Health CLI\n\n\
          SUBCOMMANDS:\n\
          \tstart [onehundod args...]     Launch onehundod background daemon\n\
          \tstop [url]                    Gracefully stop running onehundod instance\n\
@@ -45,7 +49,10 @@ fn print_usage() {
          \tnotify-test [--game-id <id>] [--game <title>] [--title <title>] [--body <text>] [--url <url>] [--json]\n\
          \t                              Dispatch a non-destructive test desktop unlock toast\n\
          \tset-api-key <key>             Store platform API key securely (0600) in ~/.config/onehundo\n\
-         \tsync-now [url]                Trigger immediate cloud sync flush via Game Health API"
+         \tsync-now [url]                Trigger immediate cloud sync flush via Game Health API\n\
+         \t-V, --version                 Print version\n\
+         \t-h, --help                    Print help",
+        env!("CARGO_PKG_VERSION")
     );
 }
 
@@ -898,6 +905,8 @@ fn main() {
     }
 
     match args[1].as_str() {
+        "-h" | "--help" | "help" => print_usage(),
+        "-V" | "--version" | "version" => print_version(),
         "start" => {
             let exe = env::current_exe()
                 .ok()
