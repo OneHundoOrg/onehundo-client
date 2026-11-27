@@ -4,7 +4,7 @@ use onehundo_client::core::config::{
 };
 use onehundo_client::core::engine::DaemonEngine;
 use onehundo_client::core::lockfile::{default_lock_path, InstanceLock};
-use onehundo_client::core::types::ProgressionMode;
+use onehundo_client::core::types::{ProgressionMode, TrustTier, VerificationState};
 use onehundo_client::observation::external_importers::{
     import_observation_path_with_options, parse_observation_path_with_options, ImportOptions,
     ObservationImportSummary,
@@ -12,6 +12,7 @@ use onehundo_client::observation::external_importers::{
 use onehundo_client::packs::matcher::PackRegistry;
 use onehundo_client::storage::journal::open_and_init_db;
 use onehundo_client::sync::http::http_request;
+use onehundo_client::ui::notifications::NotificationManager;
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,6 +34,8 @@ fn print_usage() {
          \t                              Switch daemon/session progression mode\n\
          \timport-obs <path> [--game-id <id>] [--mode <mode>] [--dry-run] [--data-dir <dir>] [--url <url>] [--json]\n\
          \t                              Import Plane C external observation (Goldberg, RPCS3/shadPS4, .oh-obs.json)\n\
+         \tnotify-test [--game-id <id>] [--game <title>] [--title <title>] [--body <text>] [--url <url>] [--json]\n\
+         \t                              Dispatch a non-destructive test desktop unlock toast\n\
          \tset-api-key <key>             Store platform API key securely (0600) in ~/.config/onehundo\n\
          \tsync-now [url]                Trigger immediate cloud sync flush via Game Health API"
     );
@@ -390,6 +393,175 @@ fn print_import_summary(summary: &ObservationImportSummary, json_out: bool) {
     }
 }
 
+fn run_notify_test(args: &[String]) {
+    let mut canonical_game_id: Option<String> = None;
+    let mut game_title: Option<String> = None;
+    let mut title: Option<String> = None;
+    let mut body: Option<String> = None;
+    let mut url_override: Option<String> = None;
+    let mut json_out = false;
+
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--game-id" if i + 1 < args.len() => {
+                i += 1;
+                canonical_game_id = Some(args[i].clone());
+            }
+            "--game" if i + 1 < args.len() => {
+                i += 1;
+                game_title = Some(args[i].clone());
+            }
+            "--title" if i + 1 < args.len() => {
+                i += 1;
+                title = Some(args[i].clone());
+            }
+            "--body" if i + 1 < args.len() => {
+                i += 1;
+                body = Some(args[i].clone());
+            }
+            "--url" if i + 1 < args.len() => {
+                i += 1;
+                url_override = Some(args[i].trim_end_matches('/').to_string());
+            }
+            "--json" => json_out = true,
+            other => {
+                eprintln!("Unknown option for notify-test: {}", other);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+
+    let base = url_override.as_deref().unwrap_or(DEFAULT_HEALTH_URL);
+    let endpoint = format!("{}/notify-test", base);
+    let payload = serde_json::json!({
+        "canonical_game_id": canonical_game_id,
+        "game_title": game_title,
+        "title": title,
+        "body": body,
+    })
+    .to_string();
+
+    match http_request("POST", &endpoint, None, Some(&payload), None) {
+        Ok(resp) if resp.status < 300 => {
+            if json_out {
+                println!("{}", resp.body);
+            } else {
+                let v: serde_json::Value =
+                    serde_json::from_str(&resp.body).unwrap_or(serde_json::Value::Null);
+                let app = v["event"]["app_name"].as_str().unwrap_or("OneHundo");
+                let ev_title = v["event"]["title"].as_str().unwrap_or("");
+                let ev_body = v["event"]["body"].as_str().unwrap_or("");
+                let dispatched = v["dispatched"].as_bool().unwrap_or(false);
+                println!(
+                    "Test notification dispatched={} via onehundod: [{}] {} — {}",
+                    dispatched, app, ev_title, ev_body
+                );
+            }
+            return;
+        }
+        Ok(resp) => {
+            eprintln!("Daemon notify-test failed ({}): {}", resp.status, resp.body);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            if url_override.is_some() {
+                eprintln!("Failed reaching daemon at {}: {}", endpoint, e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Offline fallback: dispatch directly via local NotificationManager using installed pack metadata.
+    let packs_dir = default_data_dir().join("packs");
+    let mut packs = PackRegistry::new();
+    let _ = packs.discover_in_dir(&packs_dir);
+
+    let requested_game_id = canonical_game_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let matched = if let Some(gid) = requested_game_id {
+        packs.get(gid)
+    } else {
+        packs
+            .get("nintendo.oot.longshot.pc")
+            .or_else(|| packs.list().into_iter().next())
+    };
+
+    let resolved_game_id = matched
+        .map(|p| p.manifest.canonical_game_id.clone())
+        .or_else(|| requested_game_id.map(str::to_string))
+        .unwrap_or_else(|| "nintendo.oot.longshot.pc".to_string());
+    let resolved_game_title = game_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| matched.map(|p| p.manifest.title.clone()))
+        .unwrap_or_else(|| "The Legend of Zelda: Ocarina of Time".to_string());
+    let resolved_title = title
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            matched
+                .and_then(|p| p.manifest.achievements.first())
+                .map(|a| a.title.clone())
+        })
+        .unwrap_or_else(|| "It works, it works!".to_string());
+    let resolved_body = body
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            matched
+                .and_then(|p| p.manifest.achievements.first())
+                .map(|a| a.description.clone())
+        })
+        .unwrap_or_else(|| "Desktop unlock notification test (no progress modified).".to_string());
+
+    let mgr = NotificationManager::new(true);
+    let report = mgr.notify_test_sync(
+        &resolved_game_id,
+        Some(&resolved_game_title),
+        &resolved_title,
+        &resolved_body,
+        ProgressionMode::Standard,
+        TrustTier::Local,
+        VerificationState::Unverified,
+    );
+
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "mode": "offline_fallback",
+                "dispatched": report.dispatched,
+                "os_toasts_enabled": report.os_toasts_enabled,
+                "error": report.error,
+                "event": report.event,
+            }))
+            .unwrap_or_default()
+        );
+    } else {
+        println!(
+            "Test notification dispatched={} (offline fallback): [{}] {} — {}",
+            report.dispatched,
+            report.event.app_name.as_deref().unwrap_or("OneHundo"),
+            report.event.title,
+            report.event.body
+        );
+    }
+    if let Some(err) = report.error {
+        eprintln!("Notification error: {}", err);
+        std::process::exit(1);
+    }
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
@@ -546,6 +718,7 @@ fn main() {
         "packs" => run_packs(&args),
         "mode" => run_mode(&args),
         "import-obs" => run_import_obs(&args),
+        "notify-test" => run_notify_test(&args),
         "set-api-key" => {
             let key = match args.get(2) {
                 Some(k) => k.clone(),

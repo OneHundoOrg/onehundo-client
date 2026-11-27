@@ -37,6 +37,18 @@ struct ObservationPathImportReq {
     dry_run: bool,
 }
 
+#[derive(Deserialize, Default)]
+struct NotifyTestReq {
+    #[serde(default)]
+    canonical_game_id: Option<String>,
+    #[serde(default)]
+    game_title: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
+}
+
 pub fn start_health_http_server(
     engine: Arc<DaemonEngine>,
     bind_addr: &str,
@@ -238,6 +250,43 @@ fn handle_http_conn(
         },
         ("POST", "/observations/import") | ("POST", "/v1/observation/import") => {
             handle_observation_import_http(&engine, &full_body)
+        }
+        ("POST", "/notify-test") => {
+            let trimmed = full_body.trim();
+            let req_res = if trimmed.is_empty() {
+                Ok(NotifyTestReq::default())
+            } else {
+                serde_json::from_str::<NotifyTestReq>(trimmed)
+            };
+            match req_res {
+                Ok(req) => {
+                    let report = engine.trigger_test_notification(
+                        req.canonical_game_id.as_deref(),
+                        req.game_title.as_deref(),
+                        req.title.as_deref(),
+                        req.body.as_deref(),
+                    );
+                    let status = if report.error.is_some() && report.os_toasts_enabled {
+                        "500 Internal Server Error"
+                    } else {
+                        "200 OK"
+                    };
+                    let body = serde_json::json!({
+                        "mode": "daemon",
+                        "dispatched": report.dispatched,
+                        "os_toasts_enabled": report.os_toasts_enabled,
+                        "error": report.error,
+                        "event": report.event,
+                    })
+                    .to_string();
+                    (status, "application/json; charset=utf-8", body)
+                }
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({ "error": e.to_string() }).to_string(),
+                ),
+            }
         }
         ("POST", "/sync/trigger") | ("POST", "/sync-now") => match engine.sync_now() {
             Ok(summary) => (

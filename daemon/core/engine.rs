@@ -4,6 +4,7 @@ use crate::core::config::{
 use crate::core::session::{SessionInfo, SessionManager};
 use crate::core::types::{
     now_rfc3339, FairPlayViolation, IngestionPlane, LifecycleSignal, ProgressionMode, TrustTier,
+    VerificationState,
 };
 use crate::diagnostics::{
     GameHealthSnapshot, PlaneARingTelemetry, PlaneATelemetry, SyncTelemetry,
@@ -22,7 +23,7 @@ use crate::packs::matcher::{MatchQuery, PackMatchResult, PackRegistry};
 use crate::storage::journal::{open_and_init_db, query_journal_stats, record_frame_gap_db};
 use crate::storage::state::{list_encore_runs, list_stats, list_trophies};
 use crate::sync::client::{register_device, sync_pending_batch, SyncBatchSummary};
-use crate::ui::notifications::NotificationManager;
+use crate::ui::notifications::{NotificationDispatchReport, NotificationManager};
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
@@ -441,9 +442,9 @@ impl DaemonEngine {
                 .map(|a| (a.title.clone(), a.description.clone(), a.points))
                 .unwrap_or_else(|| (ach_id.clone(), "Plane A unlock".to_string(), 10));
             let ver = if trust == TrustTier::VerifiedIntegration {
-                crate::core::types::VerificationState::Verified
+                VerificationState::Verified
             } else {
-                crate::core::types::VerificationState::Unverified
+                VerificationState::Unverified
             };
             let game_title = pack_clone.as_ref().map(|p| p.manifest.title.as_str());
             self.notifications.notify_unlock(
@@ -687,6 +688,86 @@ impl DaemonEngine {
             }
         }
         out
+    }
+
+    /// Dispatch a preview desktop unlock notification without mutating SQLite or queueing sync events.
+    pub fn trigger_test_notification(
+        &self,
+        canonical_game_id: Option<&str>,
+        game_title: Option<&str>,
+        achievement_title: Option<&str>,
+        achievement_body: Option<&str>,
+    ) -> NotificationDispatchReport {
+        let requested_game_id = canonical_game_id
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+
+        let (resolved_game_id, pack_title, first_ach) = {
+            let packs = self.packs.lock().unwrap();
+            let matched = if let Some(gid) = requested_game_id {
+                packs.get(gid)
+            } else {
+                packs
+                    .get("nintendo.oot.longshot.pc")
+                    .or_else(|| packs.list().into_iter().next())
+            };
+            if let Some(p) = matched {
+                let first = p
+                    .manifest
+                    .achievements
+                    .first()
+                    .map(|a| (a.title.clone(), a.description.clone()));
+                (
+                    p.manifest.canonical_game_id.clone(),
+                    Some(p.manifest.title.clone()),
+                    first,
+                )
+            } else {
+                (
+                    requested_game_id
+                        .unwrap_or("nintendo.oot.longshot.pc")
+                        .to_string(),
+                    None,
+                    None,
+                )
+            }
+        };
+
+        let resolved_game_title = game_title
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or(pack_title)
+            .unwrap_or_else(|| "The Legend of Zelda: Ocarina of Time".to_string());
+
+        let (default_ach_title, default_ach_body) = first_ach.unwrap_or_else(|| {
+            (
+                "It works, it works!".to_string(),
+                "Desktop unlock notification test (no progress modified).".to_string(),
+            )
+        });
+
+        let resolved_title = achievement_title
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or(default_ach_title);
+
+        let resolved_body = achievement_body
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or(default_ach_body);
+
+        self.notifications.notify_test_sync(
+            &resolved_game_id,
+            Some(&resolved_game_title),
+            &resolved_title,
+            &resolved_body,
+            self.current_progression_mode(),
+            TrustTier::Local,
+            VerificationState::Unverified,
+        )
     }
 
     pub fn pending_sync_count(&self) -> Result<u64, String> {
