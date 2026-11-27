@@ -1,9 +1,8 @@
 use onehundo_client::core::config::{save_credentials, DaemonConfig, WatchedObservationDir};
 use onehundo_client::core::engine::DaemonEngine;
 use onehundo_client::core::lockfile::{default_lock_path, InstanceLock, LockAcquireError};
+use onehundo_client::core::runner::start_daemon_runtime;
 use onehundo_client::core::types::ProgressionMode;
-use onehundo_client::diagnostics::server::start_health_http_server;
-use onehundo_client::ipc::unix_socket::start_unix_ipc_server;
 use std::env;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,10 +53,10 @@ fn print_help() {
          \t--retroarch-addr <addr>   RetroArch UDP network cmd addr (default: 127.0.0.1:55355, 'none' to disable)\n\
          \t--mode <mode>             Initial progression mode: STANDARD, ENCORE, or SPECTATOR\n\
          \t--health-addr <addr>      Game Health HTTP bind addr (default: 127.0.0.1:19850, 'none' to disable)\n\
-         \t--platform-url <url>      onehundo-platform base URL (e.g. https://api.onehundo.org)\n\
+         \t--platform-url <url>      onehundo-platform base URL (e.g. https://onehundo.org)\n\
          \t--api-key <key>           Save API key into credentials.json (never logged)\n\
          \t--sync-interval-ms <n>    Background sync interval in ms (default: 2500)\n\
-         \t--no-notify               Disable OS notify-send desktop toasts\n\
+         \t--no-notify               Disable OS desktop notifications\n\
          \t-V, --version             Print version\n\
          \t-h, --help                Print help",
         env!("CARGO_PKG_VERSION")
@@ -202,7 +201,7 @@ fn main() {
         }
     };
 
-    let engine = match DaemonEngine::initialize(cfg.clone()) {
+    let engine = match DaemonEngine::initialize(cfg) {
         Ok(e) => e,
         Err(err) => {
             eprintln!("[onehundod] Failed to initialize daemon: {}", err);
@@ -232,151 +231,37 @@ fn main() {
     }
 
     let shutdown = Arc::new(AtomicBool::new(false));
-    let ipc_handle = match start_unix_ipc_server(
+    let signal_flag = Arc::new(AtomicBool::new(false));
+    let runtime = match start_daemon_runtime(
         Arc::clone(&engine),
-        &engine.config.socket_path,
+        health_enabled,
         Arc::clone(&shutdown),
+        Some(Arc::clone(&signal_flag)),
     ) {
-        Ok(h) => h,
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("[onehundod] IPC listener error: {}", e);
+            eprintln!("[onehundod] Startup error: {}", e);
             std::process::exit(1);
         }
     };
+
     println!(
         "[onehundod] IPC listening on {}",
         engine.config.socket_path.display()
     );
-
-    let health_handle = if health_enabled {
-        match start_health_http_server(
-            Arc::clone(&engine),
-            &engine.config.health_bind_addr,
-            Arc::clone(&shutdown),
-        ) {
-            Ok((addr, h)) => {
-                println!("[onehundod] Game Health UI & API listening on http://{}", addr);
-                Some(h)
-            }
-            Err(e) => {
-                eprintln!("[onehundod] Warning: Game Health server disabled ({})", e);
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    let watch_handle = {
-        let eng = Arc::clone(&engine);
-        let sd = Arc::clone(&shutdown);
-        let interval_ms = engine.config.watch_poll_interval_ms.max(250);
-        let debounce_ms = engine.config.watch_debounce_ms;
-        Some(thread::spawn(move || {
-            let initial = eng.poll_watched_observation_dirs();
-            if initial.imported > 0 || !initial.errors.is_empty() {
-                println!(
-                    "[onehundod-watch] initial scan: {} imported, {} deduplicated, {} errors",
-                    initial.imported,
-                    initial.deduplicated,
-                    initial.errors.len()
-                );
-            }
-            while !sd.load(Ordering::Relaxed) && !SIGNAL_STOP.load(Ordering::Relaxed) {
-                let mut slept = 0u64;
-                while slept < interval_ms
-                    && !sd.load(Ordering::Relaxed)
-                    && !SIGNAL_STOP.load(Ordering::Relaxed)
-                {
-                    let step = (interval_ms - slept).min(100);
-                    thread::sleep(Duration::from_millis(step));
-                    slept += step;
-                }
-                if sd.load(Ordering::Relaxed) || SIGNAL_STOP.load(Ordering::Relaxed) {
-                    break;
-                }
-                let res = eng.poll_watched_observation_dirs_with_debounce(debounce_ms);
-                if res.imported > 0 || !res.errors.is_empty() {
-                    println!(
-                        "[onehundod-watch] imported={}, deduplicated={}, errors={:?}",
-                        res.imported, res.deduplicated, res.errors
-                    );
-                }
-            }
-        }))
-    };
-
-    let retroarch_handle = if engine.config.retroarch_udp_addr.is_some() {
-        let eng = Arc::clone(&engine);
-        let sd = Arc::clone(&shutdown);
-        Some(thread::spawn(move || {
-            while !sd.load(Ordering::Relaxed) && !SIGNAL_STOP.load(Ordering::Relaxed) {
-                let _ = eng.poll_retroarch_once();
-                let mut slept = 0u64;
-                while slept < 500
-                    && !sd.load(Ordering::Relaxed)
-                    && !SIGNAL_STOP.load(Ordering::Relaxed)
-                {
-                    thread::sleep(Duration::from_millis(100));
-                    slept += 100;
-                }
-            }
-        }))
-    } else {
-        None
-    };
-
-    let sync_handle = if engine.config.platform_url.is_some() {
-        let eng = Arc::clone(&engine);
-        let sd = Arc::clone(&shutdown);
-        let interval_ms = engine.config.sync_interval_ms.max(250);
-        Some(thread::spawn(move || {
-            if let Err(e) = eng.sync_if_pending() {
-                eprintln!("[onehundod-sync] initial sync check failed: {}", e);
-            }
-            while !sd.load(Ordering::Relaxed) && !SIGNAL_STOP.load(Ordering::Relaxed) {
-                let mut slept = 0u64;
-                while slept < interval_ms
-                    && !sd.load(Ordering::Relaxed)
-                    && !SIGNAL_STOP.load(Ordering::Relaxed)
-                {
-                    let step = (interval_ms - slept).min(100);
-                    thread::sleep(Duration::from_millis(step));
-                    slept += step;
-                }
-                if sd.load(Ordering::Relaxed) || SIGNAL_STOP.load(Ordering::Relaxed) {
-                    break;
-                }
-                if let Err(e) = eng.sync_if_pending() {
-                    eprintln!("[onehundod-sync] background sync error: {}", e);
-                }
-            }
-        }))
-    } else {
-        None
-    };
+    if let Some(addr) = runtime.health_addr {
+        println!("[onehundod] Game Health UI & API listening on http://{}", addr);
+    }
 
     while !shutdown.load(Ordering::Relaxed) {
         if SIGNAL_STOP.load(Ordering::Relaxed) {
+            signal_flag.store(true, Ordering::SeqCst);
             shutdown.store(true, Ordering::SeqCst);
             break;
         }
         thread::sleep(Duration::from_millis(50));
     }
 
-    let _ = ipc_handle.join();
-    if let Some(h) = health_handle {
-        let _ = h.join();
-    }
-    if let Some(h) = watch_handle {
-        let _ = h.join();
-    }
-    if let Some(h) = retroarch_handle {
-        let _ = h.join();
-    }
-    if let Some(h) = sync_handle {
-        let _ = h.join();
-    }
-    let _ = std::fs::remove_file(&engine.config.socket_path);
+    runtime.shutdown_and_join();
     println!("[onehundod] Shutdown complete.");
 }

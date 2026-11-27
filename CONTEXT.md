@@ -33,14 +33,14 @@
 
 ---
 
-### [x] Phase 4 Stage 1 — Mass Launcher, Decomp/Recomp & Emulator Adoption
+## 2. Phase 4 Stage 1 & Native Desktop UX + AppImage Packaging
 - **Declarative Save Watchers & Debounced Polling (`daemon/observation/external-importers/{declarative_save,watcher}.rs`, `daemon/packs/{manifest,matcher}.rs`):** Binary (magic signatures, bitflags, typed scalars), JSON, and INI/KV declarative watchers obeying strict path containment, `<= 32 MiB` bounded reads, `placeholder_template` guards, mode-isolated UUID seeds, `source_timestamp: None`, `LOCALLY_OBSERVED`/`LOCAL`/`UNVERIFIED` provenance, and `watch_debounce_ms` debouncing; multi-matcher resolution (`executable`, `app_id`, `save_path_glob`, `os`/`launcher` filtering).
 - **Manual Watch Overrides, Launcher/RetroArch Bridges & Flagship `save_rules` (`daemon/core/{config,engine}.rs`, `daemon/ipc/retroarch.rs`, `daemon/diagnostics/server.rs`, `ui/game-health/mod.rs`, `apps/desktop/main.rs`):** Persistent `manual_watches` (`0600` config save), `GET/POST /watches`, `POST /watches/remove`, `POST /watches/poll`, `POST /v1/launchers/report`, `GET /v1/launchers/status` (+ `/launchers/*` aliases), RetroArch UDP network-command bridge (`127.0.0.1:55355`, `--retroarch-addr`), CLI commands `watches`, `watch-add`, `watch-remove`, `launcher-status`, integrations in `integrations/{playnite,launchbox,recomp-launchers,retroarch,mobile}/`, 25 Stage 1 starter `.onehundo` packs (28 total, all `onehundo-validate` verified), and `v0.2.0` real declarative `save_rules` (`rules/save.json`) on `nintendo.oot.forks.onehundo`, `nintendo.sm64.recomp.onehundo`, `sony.bloodborne.forks.onehundo`, and `opengoal.jak1.onehundo` (remaining unverified packs stay `placeholder_template: true`) verified via `tests/stage1_watchers_and_bridge.rs` and `tests/flagship_save_rules.rs`.
-- **Portable Linux x86_64 Release Bundle (`scripts/package-linux.sh`):** Builds `onehundod` + `onehundo-desktop` as stripped static-pie `x86_64-unknown-linux-musl` binaries (native musl toolchain, else the `rust:alpine` podman/docker container), verifies `file`/`ldd` (no glibc), and writes the reproducible `dist/onehundo-linux-x86_64.tar.gz` + `.sha256` (flat archive of named members: `onehundod`, `onehundo-desktop`, `packs/`, `deploy/systemd/onehundod.service`, `install.sh`, `README.txt`; `tar -xzf onehundo-linux-x86_64.tar.gz && ./install.sh` installs to `~/.local/bin`, `$XDG_DATA_HOME/onehundo/packs`, and enables the `systemd --user` unit). Copy both files into `onehundo-platform/src/site/downloads/` after each rebuild.
+- **Unified Native Grid Desktop App, System Tray, Instant Detection Toast & AppImage (`ui/desktop/`, `daemon/core/{autostart,process_monitor,runner}.rs`, `scripts/package-linux.sh`):** Launching `onehundo-desktop` (or `OneHundo-x86_64.AppImage`) starts/attaches to `onehundod`, opens the Grid-styled 3-screen `eframe`/`egui` window (`Status`, `Library`, `Account`) paired with the `ksni` system tray (`Tracking Active` / `Paused` / `Sign In Needed`, Open, Pause/Resume, Launch at Login via `~/.config/autostart/onehundo.desktop`, Quit; closing the window minimizes to tray), one-click `Sign in with OneHundo.org` loopback OAuth (`ui/desktop/auth.rs`), native folder picker (`+ Add Game Folder`), session-deduplicated `OneHundo Active` desktop notifications on game launch (`daemon/core/engine.rs`, `daemon/core/process_monitor.rs`, `ui/notifications/mod.rs` with embedded Swiss Grid trophy PNG artwork cached in `$XDG_CACHE_HOME/onehundo/icons/` for unlock, active-session, and warning OS toasts) plus `Send Test Notification`, and CSRF-guarded `/session/pause` + `/auth/status` loopback endpoints (`tests/desktop_ux_and_notifications.rs`). `scripts/package-linux.sh` bundles `onehundo-desktop`, `onehundod`, all 28 `.onehundo` packs, desktop entry, and Grid icon into `dist/OneHundo-x86_64.AppImage` (+ `.sha256`); copy both into `onehundo-platform/src/site/downloads/` after each rebuild.
 
 ---
 
-## 2. Phase 4 Remaining Scope & File Ownership (Next)
+## 3. Phase 4 Remaining Scope & File Ownership (Next)
 
 **Objective:** Enable low-friction community `.onehundo` pack authoring, ship launch integrations (RetroArch, LaunchBox, Playnite, flagship recompilations), and add Ed25519 signature verification + `COMPETITIVE` trust-lane enforcement.
 
@@ -56,11 +56,14 @@
 
 ---
 
-## 3. Verification Commands
+## 4. Verification Commands
 
 ```bash
 # Build updated binaries (including onehundo-desktop) and run full Rust test suite (offline)
 cargo build --offline --bins && cargo test --offline
+
+# Package Linux AppImage (requires appimagetool or caches it automatically)
+bash scripts/package-linux.sh
 
 # Compile / lint check (all targets)
 cargo check --offline --all-targets

@@ -27,6 +27,21 @@ struct SessionModeReq {
 }
 
 #[derive(Deserialize)]
+struct SessionPauseReq {
+    paused: bool,
+}
+
+#[derive(Deserialize)]
+struct AuthCredentialsReq {
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    sign_out: bool,
+}
+
+#[derive(Deserialize)]
 struct ObservationPathImportReq {
     path: String,
     #[serde(default)]
@@ -428,6 +443,50 @@ fn handle_http_conn(
                 serde_json::json!({ "error": e }).to_string(),
             ),
         },
+        ("GET", "/auth/status") => {
+            let (signed_in, username, device_registered, platform_url) = engine.account_status();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({
+                    "signed_in": signed_in,
+                    "username": username,
+                    "device_registered": device_registered,
+                    "platform_url": platform_url,
+                })
+                .to_string(),
+            )
+        }
+        ("POST", "/auth/credentials") => {
+            match serde_json::from_str::<AuthCredentialsReq>(&full_body) {
+                Ok(req) => match engine.set_account_credentials(
+                    req.api_key,
+                    req.username,
+                    req.sign_out,
+                ) {
+                    Ok((signed_in, username, device_registered)) => (
+                        "200 OK",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({
+                            "signed_in": signed_in,
+                            "username": username,
+                            "device_registered": device_registered,
+                        })
+                        .to_string(),
+                    ),
+                    Err(e) => (
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({ "error": e }).to_string(),
+                    ),
+                },
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({ "error": e.to_string() }).to_string(),
+                ),
+            }
+        }
         ("GET", "/watches") => {
             let dirs = engine.list_watch_overrides();
             (
@@ -588,6 +647,21 @@ fn handle_http_conn(
                 "502 Bad Gateway",
                 "application/json; charset=utf-8",
                 serde_json::json!({ "error": e }).to_string(),
+            ),
+        },
+        ("POST", "/session/pause") => match serde_json::from_str::<SessionPauseReq>(&full_body) {
+            Ok(req) => {
+                let tracking_paused = engine.set_tracking_paused(req.paused);
+                (
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({ "tracking_paused": tracking_paused }).to_string(),
+                )
+            }
+            Err(e) => (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({ "error": e.to_string() }).to_string(),
             ),
         },
         ("POST", "/session/mode") => match serde_json::from_str::<SessionModeReq>(&full_body) {

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/OneHundoOrg/onehundo-client"
-description = "OneHundo local daemon (onehundod), Plane A/B/C runtime evaluators, SQLite WAL journal, Game Health diagnostics, and cloud sync client."
+description = "OneHundo local daemon (onehundod), Plane A/B/C runtime evaluators, SQLite WAL journal, native Grid desktop app, and cloud sync client."
 
 [lib]
 name = "onehundo_client"
@@ -22,6 +22,12 @@ path = "apps/desktop/main.rs"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "wayland", "x11"] }
+notify-rust = { version = "4.19", default-features = false, features = ["z"] }
+rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "wayland"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = { version = "0.3", features = ["blocking"] }
 
 [profile.release]
 strip = true

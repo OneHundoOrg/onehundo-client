@@ -1,6 +1,10 @@
 use crate::core::config::{
-    generate_uuid_v4, load_credentials, load_or_init_config, save_config, Credentials,
-    DaemonConfig, WatchedObservationDir,
+    generate_uuid_v4, load_credentials, load_or_init_config, save_config, save_credentials,
+    Credentials, DaemonConfig, WatchedObservationDir,
+};
+use crate::core::process_monitor::{
+    format_edition_or_pack, match_running_processes, scan_running_processes, DetectedProcessMatch,
+    ProcessInfo,
 };
 use crate::core::session::{SessionInfo, SessionManager};
 use crate::core::types::{
@@ -8,14 +12,14 @@ use crate::core::types::{
     VerificationState,
 };
 use crate::diagnostics::{
-    GameHealthSnapshot, LauncherGameTelemetry, PlaneARingTelemetry, PlaneATelemetry,
-    RetroArchTelemetry, SyncTelemetry,
+    GameHealthSnapshot, LauncherGameTelemetry, LibraryGameProgress, PlaneARingTelemetry,
+    PlaneATelemetry, RecentTrophyItem, RetroArchTelemetry, SyncTelemetry,
 };
-use crate::ipc::retroarch::RetroArchClient;
 use crate::evaluation::memory_arena::{FrameStepOutcome, MemoryArenaEvaluatorState};
 use crate::evaluation::semantic_events::{
     evaluate_and_commit_plane_b, SemanticCommitOutcome, SemanticEventPayload,
 };
+use crate::ipc::retroarch::RetroArchClient;
 use crate::ipc::shm_arena::ShmRingStats;
 use crate::observation::external_importers::watcher::{DirectoryWatcherState, WatchPollSummary};
 use crate::observation::external_importers::{
@@ -26,21 +30,27 @@ use crate::packs::matcher::{MatchQuery, PackMatchResult, PackRegistry};
 use crate::storage::journal::{open_and_init_db, query_journal_stats, record_frame_gap_db};
 use crate::storage::state::{list_encore_runs, list_stats, list_trophies};
 use crate::sync::client::{register_device, sync_pending_batch, SyncBatchSummary};
-use crate::ui::notifications::{NotificationDispatchReport, NotificationManager};
+use crate::ui::notifications::{
+    NotificationDispatchReport, NotificationManager, SessionNotificationTracker,
+};
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub struct DaemonEngine {
     pub config: DaemonConfig,
     pub credentials: Mutex<Credentials>,
+    pub account_username: Mutex<Option<String>>,
     pub db: Mutex<Connection>,
     pub packs: Mutex<PackRegistry>,
     pub sessions: Mutex<SessionManager>,
     pub active_progression_mode: Mutex<ProgressionMode>,
+    pub tracking_paused: AtomicBool,
+    pub active_game_notifications: Mutex<SessionNotificationTracker>,
+    pub detected_processes: Mutex<Vec<DetectedProcessMatch>>,
     pub plane_a_evaluators: Mutex<HashMap<String, MemoryArenaEvaluatorState>>,
     pub plane_a_regions: Mutex<HashMap<String, HashMap<u32, usize>>>,
     pub plane_a_rings: Mutex<HashMap<String, PlaneARingTelemetry>>,
@@ -68,6 +78,12 @@ impl DaemonEngine {
         if config.platform_url.is_none() {
             config.platform_url = loaded_cfg.platform_url;
         }
+        if config.account_username.is_none() {
+            config.account_username = loaded_cfg.account_username;
+        }
+        if !config.tracking_paused {
+            config.tracking_paused = loaded_cfg.tracking_paused;
+        }
         for w in loaded_cfg.watched_observation_dirs {
             if !config.watched_observation_dirs.iter().any(|x| x.path == w.path) {
                 config.watched_observation_dirs.push(w);
@@ -80,8 +96,9 @@ impl DaemonEngine {
 
         let mut packs = PackRegistry::new();
         for dir in &config.packs_dirs {
-            let _ = std::fs::create_dir_all(dir);
-            let _ = packs.discover_in_dir(dir);
+            if !dir.as_os_str().is_empty() {
+                let _ = packs.discover_in_dir(dir);
+            }
         }
 
         let sync_tel = SyncTelemetry {
@@ -90,6 +107,8 @@ impl DaemonEngine {
             ..Default::default()
         };
         let initial_watched = config.watched_observation_dirs.clone();
+        let initial_username = config.account_username.clone();
+        let initial_paused = config.tracking_paused;
         let ra_tel = RetroArchTelemetry {
             configured_addr: config.retroarch_udp_addr.clone(),
             ..Default::default()
@@ -99,10 +118,14 @@ impl DaemonEngine {
             notifications: NotificationManager::new(config.notifications_enabled),
             config,
             credentials: Mutex::new(creds),
+            account_username: Mutex::new(initial_username),
             db: Mutex::new(conn),
             packs: Mutex::new(packs),
             sessions: Mutex::new(SessionManager::new()),
             active_progression_mode: Mutex::new(ProgressionMode::Standard),
+            tracking_paused: AtomicBool::new(initial_paused),
+            active_game_notifications: Mutex::new(SessionNotificationTracker::new()),
+            detected_processes: Mutex::new(Vec::new()),
             plane_a_evaluators: Mutex::new(HashMap::new()),
             plane_a_regions: Mutex::new(HashMap::new()),
             plane_a_rings: Mutex::new(HashMap::new()),
@@ -115,6 +138,196 @@ impl DaemonEngine {
             sync_telemetry: Mutex::new(sync_tel),
             started_at: Instant::now(),
         }))
+    }
+
+    fn persist_current_config(&self) -> Result<(), String> {
+        let mut persist_cfg = self.config.clone();
+        persist_cfg.watched_observation_dirs = self.list_watch_overrides();
+        persist_cfg.account_username = self.account_username.lock().unwrap().clone();
+        persist_cfg.tracking_paused = self.is_tracking_paused();
+        save_config(&self.config.config_dir, &persist_cfg)
+    }
+
+    pub fn is_tracking_paused(&self) -> bool {
+        self.tracking_paused.load(Ordering::Relaxed)
+    }
+
+    pub fn set_tracking_paused(&self, paused: bool) -> bool {
+        self.tracking_paused.store(paused, Ordering::SeqCst);
+        if paused {
+            if let Ok(mut procs) = self.detected_processes.lock() {
+                procs.clear();
+            }
+            if let Ok(mut tracker) = self.active_game_notifications.lock() {
+                tracker.sync_active_prefix("game:", &HashSet::new());
+            }
+        }
+        let _ = self.persist_current_config();
+        paused
+    }
+
+    pub fn account_status(&self) -> (bool, Option<String>, bool, Option<String>) {
+        let signed_in = self.credentials.lock().unwrap().active_bearer().is_some();
+        let username = self.account_username.lock().unwrap().clone();
+        let device_registered = self.sync_telemetry.lock().unwrap().device_registered;
+        let platform_url = self.config.platform_url.clone();
+        (signed_in, username, device_registered, platform_url)
+    }
+
+    pub fn set_account_credentials(
+        &self,
+        api_key: Option<String>,
+        username: Option<String>,
+        sign_out: bool,
+    ) -> Result<(bool, Option<String>, bool), String> {
+        if sign_out {
+            let empty = Credentials::default();
+            save_credentials(&self.config.config_dir, &empty)?;
+            *self.credentials.lock().unwrap() = empty;
+            *self.account_username.lock().unwrap() = None;
+            {
+                let mut tel = self.sync_telemetry.lock().unwrap();
+                tel.device_registered = false;
+                tel.last_sync_error = None;
+            }
+            self.persist_current_config()?;
+            return Ok((false, None, false));
+        }
+
+        let clean_key = api_key
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty());
+        let clean_user = username
+            .map(|u| u.trim().trim_start_matches('@').to_string())
+            .filter(|u| !u.is_empty());
+
+        if let Some(key) = clean_key {
+            let mut creds = self.credentials.lock().unwrap();
+            if creds.api_key.as_deref() != Some(key.as_str()) {
+                creds.device_id = None;
+                creds.device_token = None;
+            }
+            creds.api_key = Some(key);
+            save_credentials(&self.config.config_dir, &creds)?;
+        }
+        if clean_user.is_some() {
+            *self.account_username.lock().unwrap() = clean_user;
+        }
+        self.persist_current_config()?;
+
+        let mut registered = self.sync_telemetry.lock().unwrap().device_registered;
+        if self.config.platform_url.is_some()
+            && self.credentials.lock().unwrap().active_bearer().is_some()
+        {
+            if let Ok(ok) = self.ensure_device_registered() {
+                registered = ok;
+            }
+        }
+        let signed_in = self.credentials.lock().unwrap().active_bearer().is_some();
+        let current_user = self.account_username.lock().unwrap().clone();
+        Ok((signed_in, current_user, registered))
+    }
+
+    fn maybe_notify_game_active(
+        &self,
+        canonical_game_id: &str,
+        game_title: &str,
+        edition_or_pack: &str,
+    ) {
+        if self.is_tracking_paused() {
+            return;
+        }
+        let session_key = format!("game:{}", canonical_game_id);
+        let pending = self
+            .active_game_notifications
+            .lock()
+            .unwrap()
+            .on_game_active(&session_key, canonical_game_id, game_title, edition_or_pack);
+        if let Some(note) = pending {
+            let mode = self.current_progression_mode();
+            self.notifications.notify_game_active(
+                &note.canonical_game_id,
+                &note.game_title,
+                &note.edition_or_pack,
+                mode,
+            );
+        }
+    }
+
+    fn is_game_currently_tracked(&self, canonical_game_id: &str) -> bool {
+        let session_active = self
+            .sessions
+            .lock()
+            .unwrap()
+            .all_sessions()
+            .iter()
+            .any(|s| s.active && s.canonical_game_id == canonical_game_id);
+        if session_active {
+            return true;
+        }
+        let launcher_active = self
+            .launcher_games
+            .lock()
+            .unwrap()
+            .values()
+            .any(|g| g.active && g.canonical_game_id == canonical_game_id);
+        if launcher_active {
+            return true;
+        }
+        self.detected_processes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.canonical_game_id == canonical_game_id)
+    }
+
+    fn clear_game_active_if_untracked(&self, canonical_game_id: &str) {
+        if !self.is_game_currently_tracked(canonical_game_id) {
+            let key = format!("game:{}", canonical_game_id);
+            self.active_game_notifications
+                .lock()
+                .unwrap()
+                .on_game_inactive(&key);
+        }
+    }
+
+    pub fn evaluate_detected_processes(&self, procs: &[ProcessInfo]) -> Vec<DetectedProcessMatch> {
+        if self.is_tracking_paused() {
+            return Vec::new();
+        }
+        let detected = {
+            let packs = self.packs.lock().unwrap();
+            match_running_processes(procs, &packs)
+        };
+        let prev_games: HashSet<String> = self
+            .detected_processes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|p| p.canonical_game_id.clone())
+            .collect();
+        let next_games: HashSet<String> = detected
+            .iter()
+            .map(|p| p.canonical_game_id.clone())
+            .collect();
+
+        *self.detected_processes.lock().unwrap() = detected.clone();
+
+        for exited in prev_games.difference(&next_games) {
+            self.clear_game_active_if_untracked(exited);
+        }
+        for m in &detected {
+            self.maybe_notify_game_active(&m.canonical_game_id, &m.game_title, &m.edition_or_pack);
+        }
+        detected
+    }
+
+    pub fn poll_running_processes(&self) -> usize {
+        if self.is_tracking_paused() {
+            return 0;
+        }
+        let procs = scan_running_processes();
+        self.evaluate_detected_processes(&procs).len()
     }
 
     pub fn load_pack_path(&self, path: &Path) -> Result<String, String> {
@@ -147,22 +360,33 @@ impl DaemonEngine {
         mode: ProgressionMode,
         trust: TrustTier,
     ) -> (SessionInfo, Option<PackMatchResult>) {
-        let matched = self
-            .packs
-            .lock()
-            .ok()
-            .and_then(|reg| reg.match_pack(&query).map(|(_, r)| r));
+        let (matched, game_title, edition_or_pack) = {
+            let reg = self.packs.lock().unwrap();
+            if let Some((pack, r)) = reg.match_pack(&query) {
+                (
+                    Some(r),
+                    Some(pack.manifest.title.clone()),
+                    Some(format_edition_or_pack(pack)),
+                )
+            } else {
+                (None, None, None)
+            }
+        };
         let pack_id = matched.as_ref().map(|m| m.pack_id.clone());
         let resolved_game_id = matched
             .as_ref()
             .map(|m| m.canonical_game_id.clone())
             .unwrap_or(canonical_game_id);
 
-        let info = self
-            .sessions
-            .lock()
-            .unwrap()
-            .start_session(session_id, producer_id, resolved_game_id, pack_id, plane, mode, trust);
+        let info = self.sessions.lock().unwrap().start_session(
+            session_id,
+            producer_id,
+            resolved_game_id.clone(),
+            pack_id.clone(),
+            plane,
+            mode,
+            trust,
+        );
 
         if plane == IngestionPlane::MemoryArena {
             let mut evals = self.plane_a_evaluators.lock().unwrap();
@@ -172,17 +396,27 @@ impl DaemonEngine {
             );
         }
 
+        if let (Some(title), Some(ed_pack)) = (game_title, edition_or_pack) {
+            self.maybe_notify_game_active(&resolved_game_id, &title, &ed_pack);
+        }
+
         (info, matched)
     }
 
     pub fn end_session(&self, session_id: &str) {
-        if let Ok(mut s) = self.sessions.lock() {
+        let ended_gid = {
+            let mut s = self.sessions.lock().unwrap();
+            let gid = s.get(session_id).map(|info| info.canonical_game_id.clone());
             s.end_session(session_id);
-        }
+            gid
+        };
         if let Ok(mut rings) = self.plane_a_rings.lock() {
             if let Some(r) = rings.get_mut(session_id) {
                 r.active = false;
             }
+        }
+        if let Some(gid) = ended_gid {
+            self.clear_game_active_if_untracked(&gid);
         }
     }
 
@@ -215,6 +449,15 @@ impl DaemonEngine {
         ev: &SemanticEventPayload,
         raw_payload: &str,
     ) -> Result<SemanticCommitOutcome, String> {
+        if self.is_tracking_paused() {
+            return Ok(SemanticCommitOutcome {
+                sequence_number: ev.sequence_number,
+                deduplicated: false,
+                newly_unlocked: Vec::new(),
+                updated_stat_int: None,
+            });
+        }
+
         let sid = session_id_override.unwrap_or(&ev.session_id);
         let fallback_mode = self.current_progression_mode();
 
@@ -315,6 +558,18 @@ impl DaemonEngine {
         frame_gap_count: u32,
         guest_memory: &[u8],
     ) -> Result<FrameStepOutcome, String> {
+        if self.is_tracking_paused() {
+            return Ok(FrameStepOutcome {
+                sequence_number,
+                frame_gap_detected: false,
+                gap_count: 0,
+                evaluation_incomplete: false,
+                rewound_on_save_load: false,
+                unlocked_achievements: Vec::new(),
+                emitted_stats: Vec::new(),
+            });
+        }
+
         let eval_start = Instant::now();
 
         if lifecycle_signal == LifecycleSignal::SaveStateLoad {
@@ -714,34 +969,29 @@ impl DaemonEngine {
             canonical_game_id: clean_gid,
         };
 
-        let snapshot = {
+        {
             let mut dirs = self.watched_dirs.lock().unwrap();
             if let Some(existing) = dirs.iter_mut().find(|d| d.path == canon) {
                 existing.canonical_game_id = entry.canonical_game_id.clone();
             } else {
                 dirs.push(entry.clone());
             }
-            dirs.clone()
-        };
+        }
 
-        let mut persist_cfg = self.config.clone();
-        persist_cfg.watched_observation_dirs = snapshot;
-        save_config(&self.config.config_dir, &persist_cfg)?;
+        self.persist_current_config()?;
         Ok(entry)
     }
 
     pub fn remove_watch_override(&self, path: &Path) -> Result<bool, String> {
         let canon = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let (removed, snapshot) = {
+        let removed = {
             let mut dirs = self.watched_dirs.lock().unwrap();
             let before = dirs.len();
             dirs.retain(|d| d.path != path && d.path != canon);
-            (dirs.len() != before, dirs.clone())
+            dirs.len() != before
         };
         if removed {
-            let mut persist_cfg = self.config.clone();
-            persist_cfg.watched_observation_dirs = snapshot;
-            save_config(&self.config.config_dir, &persist_cfg)?;
+            self.persist_current_config()?;
         }
         Ok(removed)
     }
@@ -751,6 +1001,9 @@ impl DaemonEngine {
     }
 
     pub fn poll_watched_observation_dirs_with_debounce(&self, debounce_ms: u64) -> WatchPollSummary {
+        if self.is_tracking_paused() {
+            return WatchPollSummary::default();
+        }
         let dirs = self.list_watch_overrides();
         let extra_globs = {
             let packs = self.packs.lock().unwrap();
@@ -805,13 +1058,14 @@ impl DaemonEngine {
             ..Default::default()
         };
 
-        let (pack_id, matched_game_id, game_title, total_achievements) = {
+        let (pack_id, matched_game_id, game_title, edition_or_pack, total_achievements) = {
             let packs = self.packs.lock().unwrap();
             if let Some((pack, matched)) = packs.match_pack(&query) {
                 (
                     Some(matched.pack_id),
                     matched.canonical_game_id,
                     Some(pack.manifest.title.clone()),
+                    Some(format_edition_or_pack(pack)),
                     pack.manifest.achievements.len(),
                 )
             } else {
@@ -836,7 +1090,7 @@ impl DaemonEngine {
                     .ok_or_else(|| {
                         "could not resolve canonical_game_id (provide canonical_game_id or matching app_id/executable/save_dir)".to_string()
                     })?;
-                (None, fallback_gid, None, 0usize)
+                (None, fallback_gid, None, None, 0usize)
             }
         };
 
@@ -867,8 +1121,8 @@ impl DaemonEngine {
         let telemetry = LauncherGameTelemetry {
             launcher: launcher_clean.clone(),
             canonical_game_id: matched_game_id.clone(),
-            pack_id,
-            game_title,
+            pack_id: pack_id.clone(),
+            game_title: game_title.clone(),
             app_id,
             executable,
             install_dir,
@@ -885,6 +1139,20 @@ impl DaemonEngine {
             .lock()
             .unwrap()
             .insert(key, telemetry.clone());
+
+        if active {
+            let notify_title = game_title
+                .as_deref()
+                .unwrap_or(&matched_game_id);
+            let notify_pack = edition_or_pack
+                .as_deref()
+                .or(pack_id.as_deref())
+                .unwrap_or(&launcher_clean);
+            self.maybe_notify_game_active(&matched_game_id, notify_title, notify_pack);
+        } else {
+            self.clear_game_active_if_untracked(&matched_game_id);
+        }
+
         Ok(telemetry)
     }
 
@@ -920,7 +1188,6 @@ impl DaemonEngine {
             .cloned()
             .collect();
 
-        // Refresh live completion metrics from SQLite
         let db = self.db.lock().unwrap();
         for item in &mut items {
             let rows = list_trophies(&db, Some(&item.canonical_game_id)).unwrap_or_default();
@@ -942,6 +1209,9 @@ impl DaemonEngine {
     }
 
     pub fn poll_retroarch_once(&self) -> Result<(), String> {
+        if self.is_tracking_paused() {
+            return Ok(());
+        }
         let Some(addr) = self.config.retroarch_udp_addr.clone() else {
             return Ok(());
         };
@@ -976,10 +1246,19 @@ impl DaemonEngine {
         }
 
         if status.state != "PLAYING" && status.state != "PAUSED" {
+            let ended: Vec<String> = self
+                .retroarch_sessions
+                .lock()
+                .unwrap()
+                .drain()
+                .map(|(_, (sid, _))| sid)
+                .collect();
+            for sid in ended {
+                self.end_session(&sid);
+            }
             return Ok(());
         }
 
-        // Resolve matching Plane A pack by content CRC or RetroArch metadata
         let matched_pack = {
             let packs = self.packs.lock().unwrap();
             let by_query = status.content_crc.as_ref().and_then(|crc| {
@@ -1225,6 +1504,9 @@ impl DaemonEngine {
         if self.config.platform_url.is_none() {
             return Ok(None);
         }
+        if self.credentials.lock().unwrap().active_bearer().is_none() {
+            return Ok(None);
+        }
         self.ensure_device_registered()?;
         if self.pending_sync_count()? == 0 {
             return Ok(None);
@@ -1300,21 +1582,129 @@ impl DaemonEngine {
     }
 
     pub fn health_snapshot(&self) -> Result<GameHealthSnapshot, String> {
-        let (stats, recent_observations) = {
+        let (stats, recent_observations, trophies) = {
             let db = self.db.lock().unwrap();
             (
                 query_journal_stats(&db)?,
                 list_observation_history(&db, 20)?,
+                list_trophies(&db, None)?,
             )
         };
-        let (loaded_packs_count, pack_load_errors_count, installed_packs) = {
-            let packs = self.packs.lock().unwrap();
-            (packs.list().len(), packs.load_errors().len(), packs.summaries())
-        };
+
         let sessions = self.sessions.lock().unwrap().all_sessions();
+        let active_procs = self.detected_processes.lock().unwrap().clone();
+        let launcher_games: Vec<LauncherGameTelemetry> = {
+            let mut v: Vec<LauncherGameTelemetry> =
+                self.launcher_games.lock().unwrap().values().cloned().collect();
+            v.sort_by(|a, b| a.canonical_game_id.cmp(&b.canonical_game_id));
+            v
+        };
+
+        let mut active_game_ids: HashSet<String> =
+            sessions.iter().filter(|s| s.active).map(|s| s.canonical_game_id.clone()).collect();
+        for p in &active_procs {
+            active_game_ids.insert(p.canonical_game_id.clone());
+        }
+        for l in &launcher_games {
+            if l.active {
+                active_game_ids.insert(l.canonical_game_id.clone());
+            }
+        }
+
+        let mut unlocked_by_game: HashMap<String, HashSet<String>> = HashMap::new();
+        for t in &trophies {
+            if t.progression_mode != "SPECTATOR" {
+                unlocked_by_game
+                    .entry(t.canonical_game_id.clone())
+                    .or_default()
+                    .insert(t.canonical_achievement_id.clone());
+            }
+        }
+
+        let (
+            loaded_packs_count,
+            pack_load_errors_count,
+            installed_packs,
+            library_games,
+            recent_trophies,
+        ) = {
+            let packs = self.packs.lock().unwrap();
+            let list = packs.list();
+            let mut games_seen_for_progress: HashSet<String> = HashSet::new();
+            let mut lib_games = Vec::with_capacity(list.len());
+            for pack in &list {
+                let gid = &pack.manifest.canonical_game_id;
+                if !games_seen_for_progress.insert(gid.clone()) {
+                    continue;
+                }
+                let total = pack.manifest.achievements.len();
+                let unlocked = unlocked_by_game.get(gid).map(|s| s.len()).unwrap_or(0);
+                let pct = if total > 0 {
+                    ((unlocked.min(total) as u64) * 100) / (total as u64)
+                } else {
+                    0
+                };
+                lib_games.push(LibraryGameProgress {
+                    canonical_game_id: gid.clone(),
+                    pack_id: pack.manifest.pack_id.clone(),
+                    title: pack.manifest.title.clone(),
+                    mapped_oap_edition: pack.mapped_oap_edition.clone(),
+                    unlocked_count: unlocked,
+                    total_achievements: total,
+                    completion_percent: pct,
+                    active: !self.is_tracking_paused() && active_game_ids.contains(gid),
+                    edition_or_pack: format_edition_or_pack(pack),
+                });
+            }
+            lib_games.sort_by(|a, b| b.active.cmp(&a.active).then_with(|| a.title.cmp(&b.title)));
+
+            let mut trophy_rows = trophies;
+            trophy_rows.sort_by(|a, b| b.last_unlocked_at.cmp(&a.last_unlocked_at));
+            let recent: Vec<RecentTrophyItem> = trophy_rows
+                .into_iter()
+                .take(10)
+                .map(|tr| {
+                    let pack_opt = packs.find_by_game_id(&tr.canonical_game_id);
+                    let game_title = pack_opt
+                        .map(|p| p.manifest.title.clone())
+                        .unwrap_or_else(|| tr.canonical_game_id.clone());
+                    let achievement_title = pack_opt
+                        .and_then(|p| {
+                            p.manifest
+                                .achievements
+                                .iter()
+                                .find(|a| a.canonical_achievement_id == tr.canonical_achievement_id)
+                                .map(|a| a.title.clone())
+                        })
+                        .unwrap_or_else(|| tr.canonical_achievement_id.clone());
+                    RecentTrophyItem {
+                        canonical_game_id: tr.canonical_game_id,
+                        game_title,
+                        canonical_achievement_id: tr.canonical_achievement_id,
+                        achievement_title,
+                        unlocked_at: if tr.last_unlocked_at.trim().is_empty() {
+                            None
+                        } else {
+                            Some(tr.last_unlocked_at)
+                        },
+                        progression_mode: tr.progression_mode,
+                    }
+                })
+                .collect();
+
+            (
+                list.len(),
+                packs.load_errors().len(),
+                packs.summaries(),
+                lib_games,
+                recent,
+            )
+        };
+
         let active_progression_mode = self.current_progression_mode();
         let sync = self.sync_telemetry.lock().unwrap().clone();
         let recent_notifications = self.notifications.recent();
+        let (account_signed_in, account_username, _, platform_url) = self.account_status();
 
         let mut rings: Vec<PlaneARingTelemetry> =
             self.plane_a_rings.lock().unwrap().values().cloned().collect();
@@ -1341,6 +1731,10 @@ impl DaemonEngine {
             daemon_version: crate::core::types::PROTOCOL_VERSION.to_string(),
             uptime_seconds: self.started_at.elapsed().as_secs(),
             active_progression_mode,
+            tracking_paused: self.is_tracking_paused(),
+            account_signed_in,
+            account_username,
+            platform_url,
             loaded_packs_count,
             pack_load_errors_count,
             total_journal_events: stats.total_events,
@@ -1356,14 +1750,11 @@ impl DaemonEngine {
             plane_a,
             sessions,
             installed_packs,
+            library_games,
+            recent_trophies,
             recent_observations,
             watched_dirs: self.list_watch_overrides(),
-            launcher_games: {
-                let mut v: Vec<LauncherGameTelemetry> =
-                    self.launcher_games.lock().unwrap().values().cloned().collect();
-                v.sort_by(|a, b| a.canonical_game_id.cmp(&b.canonical_game_id));
-                v
-            },
+            launcher_games,
             retroarch: self.retroarch_telemetry.lock().unwrap().clone(),
             recent_notifications,
         })
@@ -1390,5 +1781,128 @@ fn parse_hex_or_dec_u64(raw: &str) -> Result<u64, String> {
     } else {
         t.parse::<u64>()
             .map_err(|e| format!("invalid decimal address '{}': {}", raw, e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::packs::matcher::MatchQuery;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_engine_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "onehundo-eng-test-{}-{}-{}",
+            label,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn process_detection_notifies_once_per_session_and_rearms_after_exit() {
+        let dir = test_engine_dir("proc_notify");
+        let packs_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("packs");
+        let mut cfg = DaemonConfig::default();
+        cfg.config_dir = dir.join("cfg");
+        cfg.data_dir = dir.join("data");
+        cfg.packs_dirs = vec![packs_dir];
+        cfg.notifications_enabled = false;
+
+        let engine = DaemonEngine::initialize(cfg).expect("init");
+
+        let running_bb = vec![ProcessInfo {
+            pid: 55123,
+            comm: "bbport".to_string(),
+            exe_name: Some("bbport".to_string()),
+        }];
+
+        // Tick 1: game starts -> single notification fired
+        let matched1 = engine.evaluate_detected_processes(&running_bb);
+        assert_eq!(matched1.len(), 1);
+        assert_eq!(engine.notifications.recent().len(), 1);
+        assert_eq!(engine.notifications.recent()[0].title, "OneHundo Active");
+        assert!(
+            engine.notifications.recent()[0].body.contains("Bloodborne"),
+            "body={}",
+            engine.notifications.recent()[0].body
+        );
+
+        // Tick 2: game still running -> deduplicated, no extra notification
+        let matched2 = engine.evaluate_detected_processes(&running_bb);
+        assert_eq!(matched2.len(), 1);
+        assert_eq!(engine.notifications.recent().len(), 1);
+
+        // Tick 3: game exits -> notification state re-arms
+        let matched3 = engine.evaluate_detected_processes(&[]);
+        assert!(matched3.is_empty());
+        assert_eq!(engine.notifications.recent().len(), 1);
+
+        // Tick 4: game relaunches -> fires again once
+        let matched4 = engine.evaluate_detected_processes(&running_bb);
+        assert_eq!(matched4.len(), 1);
+        assert_eq!(engine.notifications.recent().len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pause_tracking_gates_unlocks_and_process_notifications() {
+        let dir = test_engine_dir("pause_gate");
+        let mut cfg = DaemonConfig::default();
+        cfg.config_dir = dir.join("cfg");
+        cfg.data_dir = dir.join("data");
+        cfg.packs_dirs = vec![];
+        cfg.notifications_enabled = false;
+
+        let engine = DaemonEngine::initialize(cfg).expect("init");
+        engine.set_tracking_paused(true);
+        assert!(engine.is_tracking_paused());
+
+        let ev = SemanticEventPayload {
+            event_type: "UNLOCK_REQUEST".to_string(),
+            canonical_game_id: "sony.bloodborne".to_string(),
+            producer_id: "bbport".to_string(),
+            session_id: "sess-pause".to_string(),
+            sequence_number: 1,
+            idempotency_key: None,
+            timestamp_nanos: None,
+            key: "ach_pause".to_string(),
+            int_value: None,
+            float_value: None,
+            string_value: None,
+            progression_mode: Some("STANDARD".to_string()),
+            trust_tier: Some("LOCAL".to_string()),
+            evidence_class: None,
+            verification_state: None,
+        };
+        let out = engine
+            .handle_plane_b_event(None, &ev, "{}")
+            .expect("paused plane b returns ok");
+        assert!(out.newly_unlocked.is_empty());
+        assert_eq!(engine.health_snapshot().unwrap().total_journal_events, 0);
+
+        engine.set_tracking_paused(false);
+        let (_, _) = engine.start_session(
+            "sess-pause".to_string(),
+            "bbport".to_string(),
+            "sony.bloodborne".to_string(),
+            MatchQuery::default(),
+            IngestionPlane::SemanticEvent,
+            ProgressionMode::Standard,
+            TrustTier::Local,
+        );
+        let out2 = engine
+            .handle_plane_b_event(None, &ev, "{}")
+            .expect("resumed plane b unlocks");
+        assert_eq!(out2.newly_unlocked.len(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

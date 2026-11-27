@@ -12,6 +12,7 @@ use onehundo_client::observation::external_importers::{
 use onehundo_client::packs::matcher::PackRegistry;
 use onehundo_client::storage::journal::open_and_init_db;
 use onehundo_client::sync::http::http_request;
+use onehundo_client::ui::desktop::launch_desktop_gui;
 use onehundo_client::ui::notifications::NotificationManager;
 use std::env;
 use std::path::{Path, PathBuf};
@@ -27,7 +28,10 @@ fn print_version() {
 
 fn print_usage() {
     println!(
-        "onehundo-desktop v{} - Desktop Service & Game Health CLI\n\n\
+        "onehundo-desktop v{} - OneHundo Desktop App & CLI\n\n\
+         USAGE:\n\
+         \tonehundo-desktop              Launch native Grid desktop app + system tray\n\
+         \tonehundo-desktop --minimized  Start silently in the system tray\n\n\
          SUBCOMMANDS:\n\
          \tstart [onehundod args...]     Launch onehundod background daemon\n\
          \tstop [url]                    Gracefully stop running onehundod instance\n\
@@ -300,7 +304,6 @@ fn run_import_obs(args: &[String]) {
         }
     }
 
-    // If daemon URL was not explicitly set and --data-dir was not explicitly set, try running daemon first.
     if data_dir_override.is_none() {
         let endpoint = format!("{}/v1/observation/import", DEFAULT_HEALTH_URL);
         let payload = serde_json::json!({
@@ -488,7 +491,6 @@ fn run_notify_test(args: &[String]) {
         }
     }
 
-    // Offline fallback: dispatch directly via local NotificationManager using installed pack metadata.
     let packs_dir = default_data_dir().join("packs");
     let mut packs = PackRegistry::new();
     let _ = packs.discover_in_dir(&packs_dir);
@@ -576,7 +578,6 @@ fn run_notify_test(args: &[String]) {
         std::process::exit(1);
     }
 }
-
 
 fn run_watches(args: &[String]) {
     let mut url: Option<String> = None;
@@ -900,11 +901,26 @@ fn run_launcher_status(args: &[String]) {
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        print_usage();
+        if let Err(err) = launch_desktop_gui(false) {
+            eprintln!("[onehundo] {}", err);
+            std::process::exit(1);
+        }
         return;
     }
 
     match args[1].as_str() {
+        "--gui" => {
+            if let Err(err) = launch_desktop_gui(false) {
+                eprintln!("[onehundo] {}", err);
+                std::process::exit(1);
+            }
+        }
+        "--minimized" => {
+            if let Err(err) = launch_desktop_gui(true) {
+                eprintln!("[onehundo] {}", err);
+                std::process::exit(1);
+            }
+        }
         "-h" | "--help" | "help" => print_usage(),
         "-V" | "--version" | "version" => print_version(),
         "start" => {

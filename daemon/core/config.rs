@@ -109,6 +109,52 @@ pub fn default_data_dir() -> PathBuf {
     PathBuf::from("/tmp/onehundo-data")
 }
 
+/// Discovers user packs directory alongside bundled AppImage / executable-relative pack directories.
+pub fn default_packs_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut push_unique = |p: PathBuf| {
+        if !dirs.iter().any(|existing| existing == &p) {
+            dirs.push(p);
+        }
+    };
+
+    if let Ok(appdir) = env::var("APPDIR") {
+        if !appdir.trim().is_empty() {
+            let bundled = PathBuf::from(appdir.trim()).join("usr/share/onehundo/packs");
+            if bundled.is_dir() {
+                push_unique(bundled);
+            }
+        }
+    }
+
+    if let Ok(exe) = env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            let share_packs = exe_dir.join("../share/onehundo/packs");
+            if share_packs.is_dir() {
+                push_unique(share_packs);
+            }
+            let sibling_packs = exe_dir.join("packs");
+            if sibling_packs.is_dir() {
+                push_unique(sibling_packs);
+            }
+        }
+    }
+
+    if let Ok(extra) = env::var("ONEHUNDO_PACKS_DIR") {
+        if !extra.trim().is_empty() {
+            push_unique(PathBuf::from(extra.trim()));
+        }
+    }
+
+    let local_packs = PathBuf::from("packs");
+    if local_packs.is_dir() {
+        push_unique(local_packs);
+    }
+
+    push_unique(default_data_dir().join("packs"));
+    dirs
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
     pub device_uuid: String,
@@ -133,6 +179,10 @@ pub struct DaemonConfig {
     pub watch_debounce_ms: u64,
     #[serde(default = "default_retroarch_udp_addr")]
     pub retroarch_udp_addr: Option<String>,
+    #[serde(default)]
+    pub account_username: Option<String>,
+    #[serde(default)]
+    pub tracking_paused: bool,
 }
 
 impl Default for DaemonConfig {
@@ -158,8 +208,21 @@ impl Default for DaemonConfig {
             watch_poll_interval_ms: default_watch_poll_interval_ms(),
             watch_debounce_ms: default_watch_debounce_ms(),
             retroarch_udp_addr: default_retroarch_udp_addr(),
+            account_username: None,
+            tracking_paused: false,
         }
     }
+}
+
+/// Configuration defaults tailored for interactive `onehundo-desktop` GUI / AppImage launches:
+/// includes bundled AppDir packs and defaults `platform_url` to `https://onehundo.org` unless overridden.
+pub fn desktop_default_config() -> DaemonConfig {
+    let mut cfg = DaemonConfig::default();
+    cfg.packs_dirs = default_packs_dirs();
+    if cfg.platform_url.is_none() && env::var_os("ONEHUNDO_PLATFORM_URL").is_none() {
+        cfg.platform_url = Some("https://onehundo.org".to_string());
+    }
+    cfg
 }
 
 fn default_hostname() -> String {

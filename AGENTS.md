@@ -2,7 +2,7 @@
 
 > **Repository:** [`onehundo-client`](https://github.com/OneHundoOrg/onehundo-client) (Public, dual `MIT OR Apache-2.0`)  
 > **Organization:** `OneHundoOrg` (`onehundo.org`)  
-> **Role:** Local background daemon (`onehundod`), SQLite append-only journal & materialized state, Plane A (`rcheevos`) & Plane B (semantic) evaluators, Plane C external importers, baseline desktop notifications, `onehundo-desktop` CLI & `Game Health` diagnostics, and cloud sync worker (`onehundo-platform` `/v1/*` client).  
+> **Role:** Unified `onehundo-desktop` native Grid desktop app + system tray (`eframe`/`egui` + `ksni`), embedded/standalone `onehundod` daemon, SQLite append-only journal & materialized state, Plane A (`rcheevos`) & Plane B (semantic) evaluators, Plane C external importers, instant game-detection & unlock notifications, and cloud sync worker (`onehundo-platform` `/v1/*` client).  
 > **Current Phase:** **Phase 4 Stage 1 (Mass Launcher, Decomp/Recomp & Emulator Adoption)** verified; remaining **Phase 4** items (**Authoring Studio, Rarity, Ed25519 Signing & `COMPETITIVE` Lane**) next.  
 > **Target Audience:** Autonomous AI agents and human contributors working on the OneHundo local runtime, evaluators, and integrations.
 
@@ -23,7 +23,7 @@
 **Invariants for Agents:**
 - **DO NOT** modify or fork `onehundo.h`, `manifest.schema.json`, or `openapi.yaml` inside this repository; consume pinned `onehundo-protocol` artifacts.
 - **DO NOT** route Plane C external observations through gameplay evaluators—passive importers flow strictly through `daemon/observation/external-importers/` with distinct provenance (`PLATFORM_CONFIRMED`, `LOCALLY_OBSERVED`, `INFERRED`).
-- **DO NOT** gate core tracking on graphics-API overlays (`ui/overlays/` remains optional for later phases; baseline desktop toast notifications + `Game Health` diagnostics are required first).
+- **DO NOT** gate core tracking on graphics-API overlays (`ui/overlays/` remains optional for later phases; the native `onehundo-desktop` app + system tray + desktop toast notifications cover core desktop UX).
 - **DO NOT** commit copyrighted ROMs, game dumps, decryption keys, or proprietary binaries into `tests/`.
 - **Canonical Pack/Edition Titles & Provenance:** Keep public game titles clean (e.g., `"The Legend of Zelda: Ocarina of Time"`, matching `onehundo-platform` `spec/identifiers.md` §2.6) and keep runtime/port identifiers (`longshot`, `bbport`) strictly in internal/provenance fields (`pack_id`, `matchers`, `producer_ids`, and observation provenance).
 
@@ -62,7 +62,7 @@
 
 ## 3. Directory Layout Guidelines
 
-- `apps/desktop/`: `onehundo-desktop` CLI entrypoint (`start`, `stop`, `status`, `health`, `packs`, `mode`, `import-obs`, `notify-test`, `set-api-key`, `sync-now`).
+- `apps/desktop/`: Unified `onehundo-desktop` native Grid desktop app + system tray (`--minimized` autostart support) and CLI subcommands (`start`, `stop`, `status`, `health`, `packs`, `mode`, `import-obs`, `watches`, `watch-add`, `watch-remove`, `launcher-status`, `notify-test`, `set-api-key`, `sync-now`).
 - `deploy/systemd/`: Checked-in `onehundod.service` `systemd --user` unit.
 - `daemon/core/`: Core daemon state machine, configuration (`~/.config/onehundo/`, watched observation dirs), `flock` single-instance lockfile (`lockfile.rs`), and session orchestration.
 - `daemon/ipc/`: Cross-platform IPC listeners (Unix domain sockets on Linux/macOS, named pipes on Windows) and SHM arena readers (`shm_arena.rs`).
@@ -75,7 +75,7 @@
 - `daemon/diagnostics/`: `Game Health` control center & status API (`http://127.0.0.1:19850/`, `/ui/packs`, `/health`, `/packs`, `/notify-test`, `/sync-now`, `/session/mode`, `/v1/observation/import`, `/shutdown`).
 - `integrations/`: Opt-in integration adapters (`emulators/` including `plane_a_emulator_harness.c`, `static-recompilations/`, `native-ports/` including `bbport_live_demo.c` and `onehundo_quick.h`, `pc-games/`, and Windows `launchbox/`).
 - `packs/`: Local validated packs (including `sony.bloodborne.bbport.onehundo`, SHA-256 `6f35c670...`, and `nintendo.oot.longshot.pc.onehundo`, `v0.2.0`, SHA-256 `146242f8...`, 13 milestones `a01`–`a13`).
-- `ui/`: Baseline `notifications/` (OS toast notifications), `game-health/` (control center HTML), `pack-browser/` (installed `.onehundo` pack browser HTML), and optional future `overlays/`.
+- `ui/`: `desktop/` (minimalist Grid `eframe`/`egui` desktop window, `ksni` system tray, `127.0.0.1` OAuth loopback client, unified backend), `notifications/` (`OneHundo Active` game-detection & unlock OS toasts via `notify-rust`), `game-health/` (control center HTML), `pack-browser/` (installed `.onehundo` pack browser HTML), and optional future `overlays/`.
 - `tests/`: Unit, crash-recovery (`SIGKILL` commit-before-ack), replay-idempotency, mode-isolation (`STANDARD`/`ENCORE`/`SPECTATOR`), daemon lock/auto-sync, Plane A evaluator/gaps, Plane C isolation & importers/watcher/UI, `notify-test` non-mutation, and end-to-end C SDK + platform tests.
 
 ---

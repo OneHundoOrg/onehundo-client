@@ -1,3 +1,5 @@
+pub mod desktop;
+
 #[path = "game-health/mod.rs"]
 pub mod game_health;
 

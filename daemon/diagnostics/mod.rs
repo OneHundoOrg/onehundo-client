@@ -88,11 +88,43 @@ pub struct RetroArchTelemetry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LibraryGameProgress {
+    pub canonical_game_id: String,
+    pub pack_id: String,
+    pub title: String,
+    pub mapped_oap_edition: Option<String>,
+    pub unlocked_count: usize,
+    pub total_achievements: usize,
+    pub completion_percent: u64,
+    pub active: bool,
+    #[serde(default)]
+    pub edition_or_pack: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentTrophyItem {
+    pub canonical_game_id: String,
+    pub game_title: String,
+    pub canonical_achievement_id: String,
+    pub achievement_title: String,
+    pub unlocked_at: Option<String>,
+    pub progression_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameHealthSnapshot {
     pub daemon_version: String,
     pub uptime_seconds: u64,
     #[serde(default = "default_progression_mode")]
     pub active_progression_mode: ProgressionMode,
+    #[serde(default)]
+    pub tracking_paused: bool,
+    #[serde(default)]
+    pub account_signed_in: bool,
+    #[serde(default)]
+    pub account_username: Option<String>,
+    #[serde(default)]
+    pub platform_url: Option<String>,
     pub loaded_packs_count: usize,
     pub pack_load_errors_count: usize,
     pub total_journal_events: u64,
@@ -110,6 +142,10 @@ pub struct GameHealthSnapshot {
     pub sessions: Vec<SessionInfo>,
     #[serde(default)]
     pub installed_packs: Vec<PackSummary>,
+    #[serde(default)]
+    pub library_games: Vec<LibraryGameProgress>,
+    #[serde(default)]
+    pub recent_trophies: Vec<RecentTrophyItem>,
     #[serde(default)]
     pub recent_observations: Vec<ObservationHistoryRow>,
     #[serde(default)]
