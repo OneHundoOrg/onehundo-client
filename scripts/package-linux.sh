@@ -220,7 +220,11 @@ if tar --version 2>/dev/null | grep -qi 'GNU tar'; then
   TAR_FLAGS+=(--sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner)
 fi
 
-tar -C "${STAGE_DIR}" "${TAR_FLAGS[@]}" -cf - . | gzip -n -9 > "${ARCHIVE_PATH}"
+# Archive the named members (never "."), so extracting into an existing folder such as
+# ~/Downloads does not rewrite that folder's permissions with the mktemp 0700 mode.
+chmod 0755 "${STAGE_DIR}"
+MEMBERS=(README.txt install.sh onehundod onehundo-desktop deploy packs)
+tar -C "${STAGE_DIR}" "${TAR_FLAGS[@]}" -cf - "${MEMBERS[@]}" | gzip -n -9 > "${ARCHIVE_PATH}"
 (
   cd "${DIST_DIR}"
   sha256sum "${BUNDLE_NAME}.tar.gz" > "${BUNDLE_NAME}.tar.gz.sha256"
