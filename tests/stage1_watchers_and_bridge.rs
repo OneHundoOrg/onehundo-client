@@ -434,8 +434,8 @@ fn manual_watch_override_http_cli_and_launcher_bridge_with_retroarch_udp() {
     assert_eq!(st_resp.status, 200);
     let st_json: serde_json::Value = serde_json::from_str(&st_resp.body).unwrap();
     assert_eq!(st_json["games"][0]["unlocked_count"], 1);
-    assert_eq!(st_json["games"][0]["total_achievements"], 3);
-    assert_eq!(st_json["games"][0]["completion_percent"], 33);
+    assert_eq!(st_json["games"][0]["total_achievements"], 12);
+    assert_eq!(st_json["games"][0]["completion_percent"], 8);
 
     // 5. RetroArch UDP bridge polls mock server and unlocks `ach_ra_boss_clear` cleanly!
     engine.poll_retroarch_once().unwrap();

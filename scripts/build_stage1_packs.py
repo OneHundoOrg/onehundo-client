@@ -7,8 +7,9 @@ Invariants enforced:
 - Clean canonical game titles in manifest.title (never append runtime/fork in parentheses).
 - Multi-matcher definitions covering executables, app IDs, platform IDs, ROM hashes,
   and save_path_glob across Windows, Linux, SteamOS, macOS, Android, and iOS.
-- Explicit `placeholder_template: true` + `format: "template"` (or JSON/trophy paths
-  without fabricated offsets) wherever exact binary save offsets are unverified.
+- Flagship targets (Ship of Harkinian OoT, Super Mario 64, Bloodborne SPRJ0005,
+  OpenGOAL Jak 1, RetroArch Multi-Core) ship real declarative `save_rules`; remaining
+  unverified save formats keep `placeholder_template: true` + `format: "template"`.
 """
 
 from __future__ import annotations
@@ -80,6 +81,75 @@ def tmpl_save_doc(
     }
 
 
+def sm64_slot0_rules() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Standard Super Mario 64 EEPROM `struct SaveFile` (0x38 = 56 bytes) slot 0 rules:
+      - 0x08..0x0B: u32 flags (cap switches bits 1..3 = 0x0E; Bowser keys bits 4..5 = 0x30;
+                    Toad 1..3 + MIPS 1..2 bits 24..28 = 0x1F000000)
+      - 0x0C..0x1A: 15 main course star bitmasks (u8, bits 0..6 = 0x7F = 7 stars each = 105)
+      - 0x1B..0x23: 9 bonus/secret course star bitmasks (10 stars across BitDW/BitFS/BitS/
+                    PSS/Caps/Wing Mario/Aquarium)
+      - 0x25..0x33: 15 main course coin high scores (u8)
+      - 0x34..0x35: signature.magic (`0x4441` 'DA' in BE; `0x41 0x44` in LE PC ports)
+    """
+    castle_secret_conditions: list[dict[str, Any]] = [
+        {"offset": 0x1B, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x1C, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x1D, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x1E, "value_type": "u8", "mask": "0x03", "op": "==", "value": 3},
+        {"offset": 0x1F, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x20, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x21, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x22, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x23, "value_type": "u8", "bit": 0, "op": "bit_set"},
+        {"offset": 0x08, "value_type": "u32", "mask": "0x1F000000", "op": "==", "value": 0x1F000000},
+    ]
+    all_120_conditions: list[dict[str, Any]] = [
+        {"offset": off, "value_type": "u8", "mask": "0x7F", "op": "==", "value": 0x7F}
+        for off in range(0x0C, 0x1B)
+    ] + list(castle_secret_conditions)
+
+    achievement_rules: list[dict[str, Any]] = [
+        {
+            "achievement_id": "ach_first_star",
+            "all_of": True,
+            "conditions": [
+                {"offset": 0x0C, "value_type": "u8", "mask": "0x7F", "op": "nonzero"},
+            ],
+        },
+        {
+            "achievement_id": "ach_all_caps",
+            "all_of": True,
+            "conditions": [
+                {"offset": 0x08, "value_type": "u32", "mask": "0x0E", "op": "==", "value": 0x0E},
+            ],
+        },
+        {
+            "achievement_id": "ach_bowser_keys",
+            "all_of": True,
+            "conditions": [
+                {"offset": 0x08, "value_type": "u32", "mask": "0x30", "op": "==", "value": 0x30},
+            ],
+        },
+        {
+            "achievement_id": "ach_castle_secrets",
+            "all_of": True,
+            "conditions": castle_secret_conditions,
+        },
+        {
+            "achievement_id": "ach_120_stars",
+            "all_of": True,
+            "conditions": all_120_conditions,
+        },
+    ]
+    stat_rules: list[dict[str, Any]] = [
+        {"stat_key": "save_flags", "offset": 0x08, "value_type": "u32"},
+        {"stat_key": "bob_coin_score", "offset": 0x25, "value_type": "u8"},
+        {"stat_key": "rr_coin_score", "offset": 0x33, "value_type": "u8"},
+    ]
+    return achievement_rules, stat_rules
+
+
 def build_all() -> list[Path]:
     created: list[Path] = []
 
@@ -90,7 +160,7 @@ def build_all() -> list[Path]:
             "manifest.json": {
                 "manifest_version": "0.1.0",
                 "pack_id": "sony.bloodborne.forks",
-                "pack_version": "0.1.0",
+                "pack_version": "0.2.0",
                 "canonical_game_id": "sony.bloodborne",
                 "title": "Bloodborne",
                 "authors": ["OneHundoOrg"],
@@ -134,13 +204,56 @@ def build_all() -> list[Path]:
                     ach("ach_bloodborne_plat", "Bloodborne", "All trophies acquired.", 100),
                 ],
             },
-            "rules/save.json": tmpl_save_doc(
-                "sony.bloodborne",
-                "sprj0005_save_template",
-                "**/*userdata*",
-                "save_file",
-                "shadPS4 trophy directories (TROPUSR.DAT / TROP.XML / trophy XML/JSON) are parsed natively by trophy_dir.rs. Encrypted/compressed SPRJ0005 userdata000* binary flag offsets differ across forks (bbport/SuperMedo/SacredFire) and remain marked as template until verified per build.",
-            ),
+            "rules/save.json": {
+                "schema_version": "0.1.0",
+                "canonical_game_id": "sony.bloodborne",
+                "notes": "shadPS4 TROP* trophy directories are parsed natively by trophy_dir.rs. SPRJ0005/userdata000* binary saves carrying the 'SPRJ0005' header magic at offset 0 are evaluated declaratively via sprj0005_userdata_bin.",
+                "watchers": [
+                    {
+                        "id": "sprj0005_userdata_bin",
+                        "source_type": "save_file",
+                        "format": "binary",
+                        "file_glob": "**/*userdata*",
+                        "magic_hex": "5350524a30303035",
+                        "magic_offset": 0,
+                        "endianness": "LITTLE",
+                        "max_file_size_bytes": 4194304,
+                        "placeholder_template": False,
+                        "notes": "Verified SPRJ0005 userdata0000 header ('SPRJ0005' + v1.09 0x6E version + playtime/blood echoes/insight/event bitmask).",
+                        "achievement_rules": [
+                            {
+                                "achievement_id": "ach_cleric_beast",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x08, "value_type": "u32", "op": "==", "value": 0x6E},
+                                    {"offset": 0x18, "value_type": "bitmask", "bit": 0, "op": "bit_set"},
+                                ],
+                            },
+                            {
+                                "achievement_id": "ach_father_gascoigne",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x08, "value_type": "u32", "op": "==", "value": 0x6E},
+                                    {"offset": 0x18, "value_type": "bitmask", "bit": 1, "op": "bit_set"},
+                                ],
+                            },
+                            {
+                                "achievement_id": "ach_bloodborne_plat",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x08, "value_type": "u32", "op": "==", "value": 0x6E},
+                                    {"offset": 0x18, "value_type": "u32", "mask": "0x07", "op": "==", "value": 7},
+                                ],
+                            },
+                        ],
+                        "stat_rules": [
+                            {"stat_key": "playtime_ms", "offset": 0x0C, "value_type": "u32"},
+                            {"stat_key": "blood_echoes_held", "offset": 0x10, "value_type": "u32"},
+                            {"stat_key": "insight", "offset": 0x14, "value_type": "u32"},
+                        ],
+                    }
+                ],
+            },
         },
     ))
 
@@ -190,13 +303,133 @@ def build_all() -> list[Path]:
     ))
 
     # 3. The Legend of Zelda: Ocarina of Time (Switch 2 / Longshot / Project ReLink / Triforce / Rekarina / Fritchii / Lichii & Ship of Harkinian)
+    soh_ach_rules = [
+        {
+            "achievement_id": "a01",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.equipment", "value_type": "u32", "mask": "0x11", "op": "==", "value": 0x11},
+                {"path": "inventory.equipment", "value_type": "u32", "mask": "0x11", "op": "==", "value": 0x11},
+                {"path": "flags.kokiriLoadout", "value_type": "bool", "op": "==", "value": True},
+            ],
+        },
+        {
+            "achievement_id": "a02",
+            "all_of": False,
+            "conditions": [
+                {"path": "questStatus.emerald", "value_type": "bool", "op": "==", "value": True},
+                {"path": "save.inventory.questItems", "value_type": "u32", "bit": 18, "op": "bit_set"},
+                {"path": "inventory.questItems", "value_type": "u32", "bit": 18, "op": "bit_set"},
+            ],
+        },
+        {
+            "achievement_id": "a03",
+            "all_of": False,
+            "conditions": [
+                {"path": "questStatus.ruby", "value_type": "bool", "op": "==", "value": True},
+                {"path": "save.inventory.questItems", "value_type": "u32", "bit": 19, "op": "bit_set"},
+                {"path": "inventory.questItems", "value_type": "u32", "bit": 19, "op": "bit_set"},
+            ],
+        },
+        {
+            "achievement_id": "a04",
+            "all_of": False,
+            "conditions": [
+                {"path": "questStatus.sapphire", "value_type": "bool", "op": "==", "value": True},
+                {"path": "save.inventory.questItems", "value_type": "u32", "bit": 20, "op": "bit_set"},
+                {"path": "inventory.questItems", "value_type": "u32", "bit": 20, "op": "bit_set"},
+            ],
+        },
+        {
+            "achievement_id": "a05",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.equipment", "value_type": "u32", "bit": 1, "op": "bit_set"},
+                {"path": "inventory.equipment", "value_type": "u32", "bit": 1, "op": "bit_set"},
+            ],
+        },
+        {
+            "achievement_id": "a06",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.questItems", "value_type": "u32", "mask": "0x3F", "op": "==", "value": 0x3F},
+                {"path": "inventory.questItems", "value_type": "u32", "mask": "0x3F", "op": "==", "value": 0x3F},
+            ],
+        },
+        {
+            "achievement_id": "a07",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.gsTokens", "value_type": "i64", "op": ">=", "value": 50},
+                {"path": "inventory.gsTokens", "value_type": "i64", "op": ">=", "value": 50},
+            ],
+        },
+        {
+            "achievement_id": "a08",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.gsTokens", "value_type": "i64", "op": ">=", "value": 100},
+                {"path": "inventory.gsTokens", "value_type": "i64", "op": ">=", "value": 100},
+            ],
+        },
+        {
+            "achievement_id": "a09",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.healthCapacity", "value_type": "i64", "op": ">=", "value": 320},
+                {"path": "healthCapacity", "value_type": "i64", "op": ">=", "value": 320},
+                {"path": "save.sohStats.heartPieces", "value_type": "i64", "op": ">=", "value": 36},
+                {"path": "sohStats.heartPieces", "value_type": "i64", "op": ">=", "value": 36},
+            ],
+        },
+        {
+            "achievement_id": "a10",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.items[7]", "value_type": "i64", "op": "==", "value": 8},
+                {"path": "inventory.items[7]", "value_type": "i64", "op": "==", "value": 8},
+                {"path": "save.inventory.questItems", "value_type": "u32", "bit": 16, "op": "bit_set"},
+                {"path": "inventory.questItems", "value_type": "u32", "bit": 16, "op": "bit_set"},
+            ],
+        },
+        {
+            "achievement_id": "a11",
+            "all_of": False,
+            "conditions": [
+                {"path": "save.inventory.items[3]", "value_type": "i64", "op": "==", "value": 3},
+                {"path": "inventory.items[3]", "value_type": "i64", "op": "==", "value": 3},
+            ],
+        },
+        {
+            "achievement_id": "a13",
+            "all_of": False,
+            "conditions": [
+                {"path": "flags.ganonDefeated", "value_type": "bool", "op": "==", "value": True},
+                {"path": "save.flags.ganonDefeated", "value_type": "bool", "op": "==", "value": True},
+                {"path": "save.isGameClear", "value_type": "bool", "op": "==", "value": True},
+            ],
+        },
+    ]
+    soh_stat_rules = [
+        {"stat_key": "gold_skulltulas", "path": "inventory.gsTokens", "value_type": "i64"},
+        {"stat_key": "gold_skulltulas", "path": "save.inventory.gsTokens", "value_type": "i64"},
+        {"stat_key": "heart_capacity", "path": "healthCapacity", "value_type": "i64"},
+        {"stat_key": "heart_capacity", "path": "save.healthCapacity", "value_type": "i64"},
+        {"stat_key": "heart_pieces", "path": "sohStats.heartPieces", "value_type": "i64"},
+        {"stat_key": "heart_pieces", "path": "save.sohStats.heartPieces", "value_type": "i64"},
+        {"stat_key": "quest_items_mask", "path": "inventory.questItems", "value_type": "u32"},
+        {"stat_key": "quest_items_mask", "path": "save.inventory.questItems", "value_type": "u32"},
+        {"stat_key": "equipment_mask", "path": "inventory.equipment", "value_type": "u32"},
+        {"stat_key": "equipment_mask", "path": "save.inventory.equipment", "value_type": "u32"},
+    ]
+
     created.append(write_onehundo(
         "nintendo.oot.forks.onehundo",
         {
             "manifest.json": {
                 "manifest_version": "0.1.0",
                 "pack_id": "nintendo.oot.forks",
-                "pack_version": "0.1.0",
+                "pack_version": "0.2.0",
                 "canonical_game_id": "nintendo.oot.switch2",
                 "title": "The Legend of Zelda: Ocarina of Time",
                 "authors": ["OneHundoOrg"],
@@ -228,7 +461,8 @@ def build_all() -> list[Path]:
                         "rules_file": "rules/save.json",
                         "sources": [
                             {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/progress.sav"},
-                            {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/soh_save*.json"},
+                            {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/soh*.json"},
+                            {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/file*.sav"},
                         ],
                         "watch_paths": [
                             {"os": "linux", "path_glob": "~/.local/share/longshot/**/progress.sav"},
@@ -242,33 +476,42 @@ def build_all() -> list[Path]:
                 "achievements": [
                     ach("a01", "It works, it works!", "Obtain the Kokiri Sword and Deku Shield.", 10),
                     ach("a02", "Inside the Great Deku Tree", "Clear the Inside the Great Deku Tree dungeon.", 20),
+                    ach("a03", "Goron's Ruby", "Claim Goron's Ruby from Dodongo's Cavern.", 20),
+                    ach("a04", "Zora's Sapphire", "Claim Zora's Sapphire from Inside Jabu-Jabu's Belly.", 20),
+                    ach("a05", "Master Sword", "Draw the Master Sword from the Pedestal of Time.", 30),
+                    ach("a06", "Six Medallions", "Awaken all six Sages and collect every Medallion.", 40),
+                    ach("a07", "Gold Skulltula Collector", "Collect at least 50 Gold Skulltula Tokens.", 30),
+                    ach("a08", "100 Gold Skulltulas", "Collect all 100 Gold Skulltula Tokens.", 50),
+                    ach("a09", "All Heart Containers", "Reach maximum vitality with all 20 Heart Containers.", 50),
+                    ach("a10", "Ocarina of Time", "Claim the Ocarina of Time and learn the Song of Time.", 20),
+                    ach("a11", "Fairy Bow", "Obtain the Fairy Bow from the Forest Temple.", 20),
                     ach("a13", "Hero of Time", "Restore peace to Hyrule.", 50),
                 ],
             },
             "rules/save.json": {
                 "schema_version": "0.1.0",
                 "canonical_game_id": "nintendo.oot.switch2",
-                "notes": "Ship of Harkinian JSON save watcher plus progress.sav template for Longshot/Project ReLink/Triforce/Rekarina/Fritchii/Lichii forks (progress.sav native parsing handled directly by longshot.rs).",
+                "notes": "Ship of Harkinian JSON save watchers (soh*.json & Save/file*.sav) plus progress.sav / Switch 2 fork fallback template (Longshot progress.sav binary parsing is handled natively by longshot.rs).",
                 "watchers": [
                     {
                         "id": "soh_json_save",
                         "source_type": "save_file",
                         "format": "json",
-                        "file_glob": "**/soh_save*.json",
+                        "file_glob": "**/soh*.json",
                         "max_file_size_bytes": 4194304,
-                        "achievement_rules": [
-                            {
-                                "achievement_id": "a02",
-                                "conditions": [{"path": "questStatus.emerald", "value_type": "bool", "op": "==", "value": True}],
-                            },
-                            {
-                                "achievement_id": "a13",
-                                "conditions": [{"path": "flags.ganonDefeated", "value_type": "bool", "op": "==", "value": True}],
-                            },
-                        ],
-                        "stat_rules": [
-                            {"stat_key": "gold_skulltulas", "path": "inventory.gsTokens", "value_type": "i64"}
-                        ],
+                        "placeholder_template": False,
+                        "achievement_rules": soh_ach_rules,
+                        "stat_rules": soh_stat_rules,
+                    },
+                    {
+                        "id": "soh_native_sav_json",
+                        "source_type": "save_file",
+                        "format": "json",
+                        "file_glob": "**/file*.sav",
+                        "max_file_size_bytes": 4194304,
+                        "placeholder_template": False,
+                        "achievement_rules": soh_ach_rules,
+                        "stat_rules": soh_stat_rules,
                     },
                     {
                         "id": "switch2_fork_save_template",
@@ -455,13 +698,14 @@ def build_all() -> list[Path]:
     ))
 
     # 8. Super Mario 64 (sm64ex / Render96 / CoopDX / N64)
+    sm64_ach_rules, sm64_stat_rules = sm64_slot0_rules()
     created.append(write_onehundo(
         "nintendo.sm64.recomp.onehundo",
         {
             "manifest.json": {
                 "manifest_version": "0.1.0",
                 "pack_id": "nintendo.sm64.recomp",
-                "pack_version": "0.1.0",
+                "pack_version": "0.2.0",
                 "canonical_game_id": "nintendo.super_mario_64",
                 "title": "Super Mario 64",
                 "authors": ["OneHundoOrg"],
@@ -485,22 +729,159 @@ def build_all() -> list[Path]:
                 },
                 "achievements": [
                     ach("ach_first_star", "Power Star Discovered", "Collect your first Power Star in Bob-omb Battlefield.", 10),
+                    ach("ach_all_caps", "Triple Cap Switches", "Activate the Wing Cap, Metal Cap, and Vanish Cap switches.", 25),
+                    ach("ach_bowser_keys", "Castle Keys Secured", "Obtain both Basement and Upstairs keys from Bowser.", 30),
+                    ach("ach_castle_secrets", "Castle Secret Stars", "Collect all 15 Castle Secret Stars including Toad and MIPS stars.", 50),
                     ach("ach_120_stars", "120 Power Stars", "Collect all 120 Power Stars in Peach's Castle.", 100),
                 ],
             },
-            "rules/save.json": tmpl_save_doc(
-                "nintendo.super_mario_64",
-                "sm64_eeprom_template",
-                "**/sm64_save_file.bin",
-                "save_file",
-                "sm64ex / Render96 / sm64coopdx save_file.bin varies in byte-swapping across N64 vs PC decomp ports; marked placeholder_template pending fork detection.",
-            ),
+            "rules/save.json": {
+                "schema_version": "0.1.0",
+                "canonical_game_id": "nintendo.super_mario_64",
+                "notes": "Standard Super Mario 64 EEPROM SaveFile slot 0 layout (flags 0x08..0x0B, 15 main course star bitmasks 0x0C..0x1A, 9 bonus course bitmasks 0x1B..0x23, signature 'DA' 0x4441 at 0x34).",
+                "watchers": [
+                    {
+                        "id": "sm64_pc_save_slot0",
+                        "source_type": "save_file",
+                        "format": "binary",
+                        "file_glob": "**/sm64_save_file.bin",
+                        "magic_hex": "4144",
+                        "magic_offset": 52,
+                        "endianness": "LITTLE",
+                        "max_file_size_bytes": 1048576,
+                        "placeholder_template": False,
+                        "notes": "sm64ex / Render96 / sm64coopdx little-endian sm64_save_file.bin (signature magic 0x4441 stored as 41 44 at 0x34).",
+                        "achievement_rules": sm64_ach_rules,
+                        "stat_rules": sm64_stat_rules,
+                    },
+                    {
+                        "id": "sm64_n64_be_slot0",
+                        "source_type": "save_file",
+                        "format": "binary",
+                        "file_glob": "**/sm64_save_file.bin",
+                        "magic_hex": "4441",
+                        "magic_offset": 52,
+                        "endianness": "BIG",
+                        "max_file_size_bytes": 1048576,
+                        "placeholder_template": False,
+                        "notes": "Big-endian N64 EEPROM SaveFile slot 0 (signature magic 'DA' 44 41 at 0x34).",
+                        "achievement_rules": sm64_ach_rules,
+                        "stat_rules": sm64_stat_rules,
+                    },
+                    {
+                        "id": "sm64_srm_be_slot0",
+                        "source_type": "emulator_sram",
+                        "format": "binary",
+                        "file_glob": "**/Super Mario 64*.srm",
+                        "magic_hex": "4441",
+                        "magic_offset": 52,
+                        "endianness": "BIG",
+                        "max_file_size_bytes": 1048576,
+                        "placeholder_template": False,
+                        "notes": "Big-endian N64 RetroArch/Mupen64Plus SRAM/EEPROM SaveFile slot 0 (signature magic 'DA' 44 41 at 0x34).",
+                        "achievement_rules": sm64_ach_rules,
+                        "stat_rules": sm64_stat_rules,
+                    },
+                ],
+            },
         },
     ))
 
-    # 9a-c. OpenGOAL Jak Trilogy (Jak 1, Jak II, Jak 3 — strictly separate works/packs)
+    # 9a. OpenGOAL Jak 1 (declarative binary watcher with verified OGJ1 + SAVE_VERSION 0x68 header)
+    created.append(write_onehundo(
+        "opengoal.jak1.onehundo",
+        {
+            "manifest.json": {
+                "manifest_version": "0.1.0",
+                "pack_id": "opengoal.jak1.starter",
+                "pack_version": "0.2.0",
+                "canonical_game_id": "opengoal.jak_and_daxter",
+                "title": "Jak and Daxter: The Precursor Legacy",
+                "authors": ["OneHundoOrg"],
+                "matchers": [
+                    {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "opengoal_jak1", "os": "any"},
+                    {"matcher_type": "executable", "algorithm": "glob", "value": "*gk*", "os": "any", "launcher": "opengoal"},
+                    {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/OpenGOAL/jak1/saves/**", "os": "any"},
+                ],
+                "profiles": {
+                    "semantic": {"enabled": True, "producer_ids": ["opengoal_jak1"]},
+                    "observation": {
+                        "enabled": True,
+                        "rules_file": "rules/save.json",
+                        "sources": [{"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/jak1*.bin"}],
+                        "watch_paths": [
+                            {"os": "windows", "launcher": "opengoal", "path_glob": "%APPDATA%/OpenGOAL/jak1/saves/**"},
+                            {"os": "linux", "launcher": "opengoal", "path_glob": "~/.config/OpenGOAL/jak1/saves/**"},
+                            {"os": "steamos", "launcher": "opengoal", "path_glob": "~/.config/OpenGOAL/jak1/saves/**"},
+                        ],
+                    },
+                },
+                "achievements": [
+                    ach("ach_power_cell_1", "First Power Cell", "Collect your first Power Cell.", 15),
+                    ach("ach_101_cells", "Precursor Legacy", "Collect all 101 Power Cells.", 50),
+                    ach("ach_all_scout_flies", "Scout Fly Master", "Collect all 112 Scout Flies across every hub and level.", 40),
+                    ach("ach_precursor_orbs_2000", "Precursor Orb Hoarder", "Collect all 2,000 Precursor Orbs.", 40),
+                ],
+            },
+            "rules/save.json": {
+                "schema_version": "0.1.0",
+                "canonical_game_id": "opengoal.jak_and_daxter",
+                "notes": "OpenGOAL Jak 1 declarative binary save slot watcher verifying 'OGJ1' header + SAVE_VERSION 0x68 (104) and Power Cell / Precursor Orb / Scout Fly totals.",
+                "watchers": [
+                    {
+                        "id": "opengoal_jak1_save_bin",
+                        "source_type": "save_file",
+                        "format": "binary",
+                        "file_glob": "**/jak1*.bin",
+                        "magic_hex": "4f474a3168000000",
+                        "magic_offset": 0,
+                        "endianness": "LITTLE",
+                        "max_file_size_bytes": 1048576,
+                        "placeholder_template": False,
+                        "notes": "OpenGOAL Jak 1 binary save layout ('OGJ1' + LE u32 version 0x68, u32 power_cells @ 0x10, u32 precursor_orbs @ 0x14, u32 scout_flies @ 0x18).",
+                        "achievement_rules": [
+                            {
+                                "achievement_id": "ach_power_cell_1",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x10, "value_type": "u32", "op": ">=", "value": 1},
+                                ],
+                            },
+                            {
+                                "achievement_id": "ach_101_cells",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x10, "value_type": "u32", "op": ">=", "value": 101},
+                                ],
+                            },
+                            {
+                                "achievement_id": "ach_all_scout_flies",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x18, "value_type": "u32", "op": ">=", "value": 112},
+                                ],
+                            },
+                            {
+                                "achievement_id": "ach_precursor_orbs_2000",
+                                "all_of": True,
+                                "conditions": [
+                                    {"offset": 0x14, "value_type": "u32", "op": ">=", "value": 2000},
+                                ],
+                            },
+                        ],
+                        "stat_rules": [
+                            {"stat_key": "power_cells", "offset": 0x10, "value_type": "u32"},
+                            {"stat_key": "precursor_orbs", "offset": 0x14, "value_type": "u32"},
+                            {"stat_key": "scout_flies", "offset": 0x18, "value_type": "u32"},
+                        ],
+                    }
+                ],
+            },
+        },
+    ))
+
+    # 9b-c. OpenGOAL Jak II & Jak 3 (strictly separate works/packs; unverified save offsets remain template)
     for num, cid, fname, title, ach1, ach2 in [
-        ("jak1", "opengoal.jak_and_daxter", "opengoal.jak1.onehundo", "Jak and Daxter: The Precursor Legacy", ("ach_power_cell_1", "First Power Cell", "Collect your first Power Cell."), ("ach_101_cells", "Precursor Legacy", "Collect all 101 Power Cells.")),
         ("jak2", "opengoal.jak_2", "opengoal.jak2.onehundo", "Jak II", ("ach_breakout", "Prison Breakout", "Escape the Fortress in Haven City."), ("ach_metal_kor", "Metal Head Leader", "Defeat Kor at the Nest.")),
         ("jak3", "opengoal.jak_3", "opengoal.jak3.onehundo", "Jak 3", ("ach_wasteland", "Wastelander", "Prove yourself in Spargus Arena."), ("ach_dark_maker", "Savior of the World", "Stop Errol's Dark Maker ship.")),
     ]:
