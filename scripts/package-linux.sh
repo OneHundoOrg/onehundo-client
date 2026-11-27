@@ -136,8 +136,12 @@ mkdir -p "${DIST_DIR}"
 rm -f "${APPIMAGE_PATH}" "${SHA_PATH}"
 
 echo "==> Packing ${APPIMAGE_PATH} with ${APPIMAGETOOL_BIN}"
-if ! ARCH=x86_64 "${APPIMAGETOOL_BIN}" --no-appstream "${APPDIR}" "${APPIMAGE_PATH}" 2>/dev/null; then
-  ARCH=x86_64 "${APPIMAGETOOL_BIN}" --appimage-extract-and-run --no-appstream "${APPDIR}" "${APPIMAGE_PATH}"
+RUNTIME_ARGS=()
+if [[ -n "${APPIMAGE_RUNTIME_FILE:-}" ]]; then
+  RUNTIME_ARGS+=(--runtime-file "${APPIMAGE_RUNTIME_FILE}")
+fi
+if ! ARCH=x86_64 "${APPIMAGETOOL_BIN}" --no-appstream "${RUNTIME_ARGS[@]}" "${APPDIR}" "${APPIMAGE_PATH}" 2>/dev/null; then
+  ARCH=x86_64 "${APPIMAGETOOL_BIN}" --appimage-extract-and-run --no-appstream "${RUNTIME_ARGS[@]}" "${APPDIR}" "${APPIMAGE_PATH}"
 fi
 chmod 0755 "${APPIMAGE_PATH}"
 
