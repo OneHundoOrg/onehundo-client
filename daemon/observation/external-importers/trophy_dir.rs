@@ -84,6 +84,7 @@ fn resolve_game_id(
                 asset_archive_hash: None,
                 platform_id: Some(cand.clone()),
                 region: None,
+                ..Default::default()
             }) {
                 return matched.canonical_game_id;
             }

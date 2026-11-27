@@ -58,6 +58,36 @@ pub struct PlaneATelemetry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LauncherGameTelemetry {
+    pub launcher: String,
+    pub canonical_game_id: String,
+    pub pack_id: Option<String>,
+    pub game_title: Option<String>,
+    pub app_id: Option<String>,
+    pub executable: Option<String>,
+    pub install_dir: Option<String>,
+    pub save_dir: Option<String>,
+    pub active: bool,
+    pub last_seen_at: String,
+    pub unlocked_count: usize,
+    pub total_achievements: usize,
+    pub completion_percent: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RetroArchTelemetry {
+    pub configured_addr: Option<String>,
+    pub connected: bool,
+    pub version: Option<String>,
+    pub active_system: Option<String>,
+    pub active_content: Option<String>,
+    pub content_crc: Option<String>,
+    pub session_id: Option<String>,
+    pub polls: u64,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameHealthSnapshot {
     pub daemon_version: String,
     pub uptime_seconds: u64,
@@ -84,5 +114,9 @@ pub struct GameHealthSnapshot {
     pub recent_observations: Vec<ObservationHistoryRow>,
     #[serde(default)]
     pub watched_dirs: Vec<WatchedObservationDir>,
+    #[serde(default)]
+    pub launcher_games: Vec<LauncherGameTelemetry>,
+    #[serde(default)]
+    pub retroarch: RetroArchTelemetry,
     pub recent_notifications: Vec<NotificationEvent>,
 }

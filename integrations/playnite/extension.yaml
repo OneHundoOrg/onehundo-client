@@ -1,0 +1,12 @@
+Id: onehundo.playnite.bridge
+Name: OneHundo Desktop Bridge
+Author: OneHundoOrg
+Version: 0.1.0
+Module: OneHundoPlayniteExtension.psm1
+Type: Script
+Icon: https://onehundo.org/favicon.ico
+Links:
+  - Name: Website
+    Url: https://onehundo.org
+  - Name: Protocol
+    Url: https://github.com/OneHundoOrg/onehundo-protocol

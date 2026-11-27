@@ -62,6 +62,7 @@ fn validates_bloodborne_bbport_production_pack() {
             asset_archive_hash: None,
             platform_id: Some("CUSA03173".into()),
             region: None,
+            ..Default::default()
         })
         .expect("bbport query must match sony.bloodborne.bbport.pc");
     assert_eq!(matched.pack_id, "sony.bloodborne.bbport.pc");
@@ -97,6 +98,7 @@ fn validates_oot_longshot_production_pack() {
             asset_archive_hash: None,
             platform_id: Some("provisional:oot-switch2".into()),
             region: None,
+            ..Default::default()
         })
         .expect("longshot query must match nintendo.oot.longshot.pc");
     assert_eq!(matched.pack_id, "nintendo.oot.longshot.pc");
@@ -174,6 +176,7 @@ fn enforces_deterministic_matcher_precedence() {
             asset_archive_hash: None,
             platform_id: None,
             region: Some("EUR".into()),
+            ..Default::default()
         })
         .expect("should match pack");
     assert_eq!(matched.pack_id, "test.security.pack");
@@ -190,6 +193,7 @@ fn enforces_deterministic_matcher_precedence() {
             asset_archive_hash: None,
             platform_id: None,
             region: Some("JPN".into()),
+            ..Default::default()
         })
         .is_none());
 }

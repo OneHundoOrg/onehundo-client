@@ -3,6 +3,7 @@
 //! External observations NEVER route through Plane A or Plane B gameplay evaluators,
 //! and MUST carry provenance (`PLATFORM_CONFIRMED`, `LOCALLY_OBSERVED`, `INFERRED`).
 
+pub mod declarative_save;
 pub mod generic_export;
 pub mod goldberg;
 pub mod longshot;
@@ -264,7 +265,7 @@ pub fn parse_observation_json_str(json_str: &str) -> Result<Vec<ObservationRecor
 }
 
 /// Import validated Plane C observation records directly into `observation_journal`
-/// and outbox `event_journal` without ever passing through gameplay evaluators.
+/// and outbox `event_journal` without ever passing through runtime evaluators.
 pub fn import_observation_records(
     conn: &mut Connection,
     records: &[ObservationRecord],
@@ -439,6 +440,12 @@ pub fn parse_observation_path_with_options(
             return longshot::parse_longshot_path(path, opts);
         }
 
+        if let Some(reg) = packs {
+            if let Some(parsed) = declarative_save::try_parse_with_packs(path, reg, opts)? {
+                return Ok(parsed);
+            }
+        }
+
         // Fall back to first `*.oh-obs.json` inside directory if present
         if let Ok(rd) = fs::read_dir(path) {
             let mut obs_files: Vec<_> = rd
@@ -468,7 +475,7 @@ pub fn parse_observation_path_with_options(
         }
 
         return Err(format!(
-            "no recognized Goldberg/GSE, trophy directory, Longshot progress.sav, or .oh-obs.json files found in '{}'",
+            "no recognized Goldberg/GSE, trophy directory, Longshot progress.sav, declarative save files, or .oh-obs.json files found in '{}'",
             path.display()
         ));
     }
@@ -486,7 +493,14 @@ pub fn parse_observation_path_with_options(
         | "trophies.xml" | "tropusr.json" | "trophies.json" | "trophy.json" => {
             trophy_dir::parse_trophy_file(path, packs, opts)
         }
-        _ => generic_export::parse_generic_or_protocol_file(path, opts),
+        _ => {
+            if let Some(reg) = packs {
+                if let Some(parsed) = declarative_save::try_parse_with_packs(path, reg, opts)? {
+                    return Ok(parsed);
+                }
+            }
+            generic_export::parse_generic_or_protocol_file(path, opts)
+        }
     }
 }
 

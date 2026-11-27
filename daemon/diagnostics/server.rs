@@ -49,6 +49,82 @@ struct NotifyTestReq {
     body: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct WatchAddReq {
+    #[serde(default)]
+    canonical_game_id: Option<String>,
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct WatchRemoveReq {
+    path: String,
+}
+
+#[derive(Deserialize)]
+struct LauncherReportReq {
+    launcher: String,
+    #[serde(default)]
+    canonical_game_id: Option<String>,
+    #[serde(default)]
+    app_id: Option<String>,
+    #[serde(default)]
+    executable: Option<String>,
+    #[serde(default)]
+    install_dir: Option<String>,
+    #[serde(default)]
+    save_dir: Option<String>,
+    #[serde(default)]
+    os: Option<String>,
+    #[serde(default = "default_true_opt")]
+    active: bool,
+}
+
+fn default_true_opt() -> bool {
+    true
+}
+
+fn decode_query_component(raw: &str) -> String {
+    let mut out = Vec::with_capacity(raw.len());
+    let bytes = raw.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'+' {
+            out.push(b' ');
+            i += 1;
+        } else if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(hex) = std::str::from_utf8(&bytes[i + 1..i + 3]) {
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b);
+                    i += 3;
+                    continue;
+                }
+            }
+            out.push(bytes[i]);
+            i += 1;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).to_string()
+}
+
+fn parse_query_params(raw_path: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some((_, qs)) = raw_path.split_once('?') else {
+        return map;
+    };
+    for pair in qs.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        map.insert(decode_query_component(k), decode_query_component(v));
+    }
+    map
+}
+
 /// Header value for `name` in a raw request head (case-insensitive), first occurrence.
 fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
     head.lines().skip(1).find_map(|l| {
@@ -352,6 +428,116 @@ fn handle_http_conn(
                 serde_json::json!({ "error": e }).to_string(),
             ),
         },
+        ("GET", "/watches") => {
+            let dirs = engine.list_watch_overrides();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({ "watched_dirs": dirs }).to_string(),
+            )
+        }
+        ("POST", "/watches") => match serde_json::from_str::<WatchAddReq>(&full_body) {
+            Ok(req) => match engine.add_watch_override(req.canonical_game_id, Path::new(&req.path)) {
+                Ok(added) => (
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({
+                        "watched_dir": added,
+                        "watched_dirs": engine.list_watch_overrides(),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({ "error": e }).to_string(),
+                ),
+            },
+            Err(e) => (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({ "error": e.to_string() }).to_string(),
+            ),
+        },
+        ("POST", "/watches/remove") => match serde_json::from_str::<WatchRemoveReq>(&full_body) {
+            Ok(req) => match engine.remove_watch_override(Path::new(&req.path)) {
+                Ok(removed) => (
+                    "200 OK",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({
+                        "removed": removed,
+                        "watched_dirs": engine.list_watch_overrides(),
+                    })
+                    .to_string(),
+                ),
+                Err(e) => (
+                    "500 Internal Server Error",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({ "error": e }).to_string(),
+                ),
+            },
+            Err(e) => (
+                "400 Bad Request",
+                "application/json; charset=utf-8",
+                serde_json::json!({ "error": e.to_string() }).to_string(),
+            ),
+        },
+        ("POST", "/watches/poll") => {
+            let summary = engine.poll_watched_observation_dirs();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::to_string(&summary).unwrap_or_default(),
+            )
+        }
+        ("POST", "/v1/launchers/report") | ("POST", "/launchers/report") => {
+            match serde_json::from_str::<LauncherReportReq>(&full_body) {
+                Ok(req) => match engine.report_launcher_game(
+                    &req.launcher,
+                    req.canonical_game_id,
+                    req.app_id,
+                    req.executable,
+                    req.install_dir,
+                    req.save_dir,
+                    req.os,
+                    req.active,
+                ) {
+                    Ok(telemetry) => (
+                        "200 OK",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({ "game": telemetry }).to_string(),
+                    ),
+                    Err(e) => (
+                        "400 Bad Request",
+                        "application/json; charset=utf-8",
+                        serde_json::json!({ "error": e }).to_string(),
+                    ),
+                },
+                Err(e) => (
+                    "400 Bad Request",
+                    "application/json; charset=utf-8",
+                    serde_json::json!({ "error": e.to_string() }).to_string(),
+                ),
+            }
+        }
+        ("GET", "/v1/launchers/status") | ("GET", "/launchers/status") => {
+            let q = parse_query_params(raw_path);
+            let games = engine.query_launcher_status(
+                q.get("canonical_game_id").map(String::as_str).filter(|s| !s.is_empty()),
+                q.get("app_id").map(String::as_str).filter(|s| !s.is_empty()),
+                q.get("executable").map(String::as_str).filter(|s| !s.is_empty()),
+            );
+            let retroarch = engine.retroarch_telemetry.lock().unwrap().clone();
+            (
+                "200 OK",
+                "application/json; charset=utf-8",
+                serde_json::json!({
+                    "games": games,
+                    "retroarch": retroarch,
+                })
+                .to_string(),
+            )
+        }
         ("POST", "/observations/import") | ("POST", "/v1/observation/import") => {
             handle_observation_import_http(&engine, &full_body)
         }

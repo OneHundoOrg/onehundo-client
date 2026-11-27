@@ -37,6 +37,7 @@ fn enforces_spectator_non_mutation_encore_preservation_and_trust_downgrade() {
             asset_archive_hash: None,
             platform_id: None,
             region: None,
+            ..Default::default()
         },
         IngestionPlane::SemanticEvent,
         ProgressionMode::Spectator,
@@ -103,6 +104,7 @@ fn enforces_spectator_non_mutation_encore_preservation_and_trust_downgrade() {
             asset_archive_hash: None,
             platform_id: None,
             region: None,
+            ..Default::default()
         },
         IngestionPlane::SemanticEvent,
         ProgressionMode::Standard,
@@ -161,6 +163,7 @@ fn enforces_spectator_non_mutation_encore_preservation_and_trust_downgrade() {
             asset_archive_hash: None,
             platform_id: None,
             region: None,
+            ..Default::default()
         },
         IngestionPlane::SemanticEvent,
         ProgressionMode::Encore,

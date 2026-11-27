@@ -475,6 +475,60 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
         }
     }
 
+    let mut watch_rows = String::new();
+    if health.watched_dirs.is_empty() {
+        watch_rows.push_str(
+            "<tr><td colspan=\"3\">No manual watch overrides configured yet. Bind a save folder below.</td></tr>",
+        );
+    } else {
+        for w in &health.watched_dirs {
+            let p_str = w.path.display().to_string();
+            watch_rows.push_str(&format!(
+                "<tr>\
+                 <td><code>{}</code></td>\
+                 <td><code>{}</code></td>\
+                 <td><button type=\"button\" class=\"watch-remove-btn\" data-path=\"{}\">Remove</button></td>\
+                 </tr>",
+                esc_html(w.canonical_game_id.as_deref().unwrap_or("auto-detect")),
+                esc_html(&p_str),
+                esc_html(&p_str),
+            ));
+        }
+    }
+
+    let mut launcher_rows = String::new();
+    if health.launcher_games.is_empty() {
+        launcher_rows.push_str(
+            "<tr><td colspan=\"6\">No external launchers (Playnite, LaunchBox, Recomp Launchers) have reported games yet.</td></tr>",
+        );
+    } else {
+        for lg in &health.launcher_games {
+            let state_badge = if lg.active {
+                r#"<span class="badge badge--inverse">Active</span>"#
+            } else {
+                r#"<span class="badge">Idle</span>"#
+            };
+            launcher_rows.push_str(&format!(
+                "<tr>\
+                 <td>{}</td>\
+                 <td><code>{}</code></td>\
+                 <td><code>{}</code></td>\
+                 <td><code>{}</code></td>\
+                 <td class=\"num\">{} / {} ({}%)</td>\
+                 <td>{}</td>\
+                 </tr>",
+                esc_html(&lg.launcher),
+                esc_html(&lg.canonical_game_id),
+                esc_html(lg.pack_id.as_deref().unwrap_or("No pack matched")),
+                esc_html(lg.save_dir.as_deref().or(lg.executable.as_deref()).unwrap_or("—")),
+                lg.unlocked_count,
+                lg.total_achievements,
+                lg.completion_percent,
+                state_badge,
+            ));
+        }
+    }
+
     let mut notif_items = String::new();
     if health.recent_notifications.is_empty() {
         notif_items.push_str("<li>No notifications recorded yet.</li>");
@@ -618,6 +672,60 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
         </form>
         <div id="import-status" class="status-line" role="status" aria-live="polite">Ready to import Goldberg/GSE, RPCS3/shadPS4, or .oh-obs.json files.</div>
       </div>
+
+      <div class="panel">
+        <h3>Manual Watch Override (<code>POST /watches</code>)</h3>
+        <p class="meta">Bind any non-default or portable save directory to a canonical game ID for automatic debounced evaluation.</p>
+        <form id="watch-add-form">
+          <label for="watch-game-id">Canonical game ID (optional for auto-match)</label>
+          <input id="watch-game-id" name="canonical_game_id" type="text" placeholder="e.g. sony.bloodborne or nintendo.oot.switch2">
+          <label for="watch-path">Save or trophy folder path</label>
+          <input id="watch-path" name="path" type="text" placeholder="/home/user/.local/share/shadPS4/user/savedata/SPRJ0005" required>
+          <div class="btn-row">
+            <button type="submit" class="primary">Bind Watch Folder</button>
+            <button type="button" id="watch-poll-btn">Scan Watches Now</button>
+          </div>
+        </form>
+        <div id="watch-status" class="status-line" role="status" aria-live="polite">Configured watched directories: {watched_count}</div>
+      </div>
+    </div>
+  </section>
+
+  <section aria-labelledby="watches-heading">
+    <h2 id="watches-heading">Manual Watch Overrides &amp; RetroArch / Launcher Bridges</h2>
+    <div class="grid">
+      <div class="card">
+        <h3>RetroArch Network Command Bridge</h3>
+        <div class="val">{ra_state}</div>
+        <div class="meta">addr: <code>{ra_addr}</code> · polls: {ra_polls} · core: {ra_system} · content: {ra_content}</div>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Canonical Game ID</th>
+            <th scope="col">Watched Path</th>
+            <th scope="col">Action</th>
+          </tr>
+        </thead>
+        <tbody id="watches-tbody">{watch_rows}</tbody>
+      </table>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Launcher</th>
+            <th scope="col">Canonical Game ID</th>
+            <th scope="col">Matched Pack</th>
+            <th scope="col">Save / Exe Path</th>
+            <th scope="col" class="num">Completion</th>
+            <th scope="col">Status</th>
+          </tr>
+        </thead>
+        <tbody>{launcher_rows}</tbody>
+      </table>
     </div>
   </section>
 
@@ -797,6 +905,71 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
       }}
     }});
   }}
+
+  const watchForm = document.getElementById('watch-add-form');
+  const watchStatus = document.getElementById('watch-status');
+  const watchPollBtn = document.getElementById('watch-poll-btn');
+  if (watchForm) {{
+    watchForm.addEventListener('submit', async (ev) => {{
+      ev.preventDefault();
+      watchStatus.className = 'status-line';
+      watchStatus.textContent = 'Binding manual watch folder...';
+      const path = document.getElementById('watch-path').value.trim();
+      const gid = document.getElementById('watch-game-id').value.trim();
+      const payload = {{ path }};
+      if (gid) payload.canonical_game_id = gid;
+      try {{
+        const res = await fetch('/watches', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify(payload)
+        }});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Watch bind failed');
+        watchStatus.textContent = 'Bound watch folder (' + (data.watched_dirs ? data.watched_dirs.length : 1) + ' active). Reload page to refresh table.';
+      }} catch (err) {{
+        watchStatus.className = 'status-line status-line--err';
+        watchStatus.textContent = 'Watch error: ' + err.message;
+      }}
+    }});
+  }}
+  if (watchPollBtn) {{
+    watchPollBtn.addEventListener('click', async () => {{
+      watchStatus.className = 'status-line';
+      watchStatus.textContent = 'Scanning watched directories...';
+      try {{
+        const res = await fetch('/watches/poll', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: '{{}}'
+        }});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Watch scan failed');
+        watchStatus.textContent = 'Scanned ' + data.files_scanned + ' file(s), changed ' + data.files_changed + ', imported ' + data.imported + '.';
+      }} catch (err) {{
+        watchStatus.className = 'status-line status-line--err';
+        watchStatus.textContent = 'Scan error: ' + err.message;
+      }}
+    }});
+  }}
+  document.querySelectorAll('.watch-remove-btn').forEach((btn) => {{
+    btn.addEventListener('click', async () => {{
+      const path = btn.getAttribute('data-path');
+      try {{
+        const res = await fetch('/watches/remove', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ path }})
+        }});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Remove failed');
+        watchStatus.textContent = 'Removed watch: ' + path;
+      }} catch (err) {{
+        watchStatus.className = 'status-line status-line--err';
+        watchStatus.textContent = 'Remove error: ' + err.message;
+      }}
+    }});
+  }});
 }})();
 </script>
 </body>
@@ -833,6 +1006,13 @@ pub fn render_game_health_html(health: &GameHealthSnapshot) -> String {
         ring_rows = ring_rows,
         pack_rows = pack_rows,
         obs_rows = obs_rows,
+        watch_rows = watch_rows,
+        launcher_rows = launcher_rows,
+        ra_state = if health.retroarch.connected { "Connected" } else { "Standby (fail-open)" },
+        ra_addr = esc_html(health.retroarch.configured_addr.as_deref().unwrap_or("disabled")),
+        ra_polls = health.retroarch.polls,
+        ra_system = esc_html(health.retroarch.active_system.as_deref().unwrap_or("—")),
+        ra_content = esc_html(health.retroarch.active_content.as_deref().unwrap_or("—")),
         notif_items = notif_items,
     )
 }

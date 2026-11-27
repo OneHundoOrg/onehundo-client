@@ -1,6 +1,6 @@
 use onehundo_client::core::config::{
-    default_config_dir, default_data_dir, default_socket_path, load_credentials, save_credentials,
-    DaemonConfig,
+    default_config_dir, default_data_dir, default_socket_path, load_credentials,
+    load_or_init_config, save_config, save_credentials, DaemonConfig, WatchedObservationDir,
 };
 use onehundo_client::core::engine::DaemonEngine;
 use onehundo_client::core::lockfile::{default_lock_path, InstanceLock};
@@ -34,6 +34,14 @@ fn print_usage() {
          \t                              Switch daemon/session progression mode\n\
          \timport-obs <path> [--game-id <id>] [--mode <mode>] [--dry-run] [--data-dir <dir>] [--url <url>] [--json]\n\
          \t                              Import Plane C external observation (Goldberg, RPCS3/shadPS4, .oh-obs.json)\n\
+         \twatches [--url <url>] [--config-dir <dir>] [--json]\n\
+         \t                              List active Manual Watch Overrides (save/trophy directories)\n\
+         \twatch-add <game_id> <path> [--url <url>] [--config-dir <dir>] [--json]\n\
+         \t                              Bind a custom save folder path to a canonical game ID\n\
+         \twatch-remove <path> [--url <url>] [--config-dir <dir>] [--json]\n\
+         \t                              Remove a manual watch override\n\
+         \tlauncher-status [--game-id <id>] [--url <url>] [--json]\n\
+         \t                              Query active launcher bridge games & completion status\n\
          \tnotify-test [--game-id <id>] [--game <title>] [--title <title>] [--body <text>] [--url <url>] [--json]\n\
          \t                              Dispatch a non-destructive test desktop unlock toast\n\
          \tset-api-key <key>             Store platform API key securely (0600) in ~/.config/onehundo\n\
@@ -483,7 +491,7 @@ fn run_notify_test(args: &[String]) {
         .map(str::trim)
         .filter(|s| !s.is_empty());
     let matched = if let Some(gid) = requested_game_id {
-        packs.get(gid)
+        packs.find_by_game_id(gid)
     } else {
         packs
             .get("nintendo.oot.longshot.pc")
@@ -559,6 +567,326 @@ fn run_notify_test(args: &[String]) {
     if let Some(err) = report.error {
         eprintln!("Notification error: {}", err);
         std::process::exit(1);
+    }
+}
+
+
+fn run_watches(args: &[String]) {
+    let mut url: Option<String> = None;
+    let mut cfg_dir_override: Option<PathBuf> = None;
+    let mut json_out = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--url" if i + 1 < args.len() => {
+                i += 1;
+                url = Some(args[i].trim_end_matches('/').to_string());
+            }
+            "--config-dir" if i + 1 < args.len() => {
+                i += 1;
+                cfg_dir_override = Some(PathBuf::from(&args[i]));
+            }
+            "--json" => json_out = true,
+            other => {
+                eprintln!("Unknown option for watches: {}", other);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+
+    if cfg_dir_override.is_none() || url.is_some() {
+        let base = url.as_deref().unwrap_or(DEFAULT_HEALTH_URL);
+        let endpoint = format!("{}/watches", base);
+        if let Ok(resp) = http_request("GET", &endpoint, None, None, None) {
+            if resp.status < 300 {
+                if json_out {
+                    println!("{}", resp.body);
+                    return;
+                }
+                let v: serde_json::Value =
+                    serde_json::from_str(&resp.body).unwrap_or(serde_json::Value::Null);
+                if let Some(arr) = v["watched_dirs"].as_array() {
+                    if arr.is_empty() {
+                        println!("No manual watch overrides configured.");
+                    } else {
+                        for item in arr {
+                            println!(
+                                "{} -> {}",
+                                item["canonical_game_id"].as_str().unwrap_or("auto"),
+                                item["path"].as_str().unwrap_or("-")
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
+    let cfg_dir = cfg_dir_override.unwrap_or_else(default_config_dir);
+    let cfg = load_or_init_config(&cfg_dir).unwrap_or_default();
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "watched_dirs": cfg.watched_observation_dirs
+            }))
+            .unwrap_or_default()
+        );
+    } else if cfg.watched_observation_dirs.is_empty() {
+        println!("No manual watch overrides configured in {}.", cfg_dir.display());
+    } else {
+        for w in cfg.watched_observation_dirs {
+            println!(
+                "{} -> {}",
+                w.canonical_game_id.as_deref().unwrap_or("auto"),
+                w.path.display()
+            );
+        }
+    }
+}
+
+fn run_watch_add(args: &[String]) {
+    let mut positionals: Vec<String> = Vec::new();
+    let mut url: Option<String> = None;
+    let mut cfg_dir_override: Option<PathBuf> = None;
+    let mut json_out = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--url" if i + 1 < args.len() => {
+                i += 1;
+                url = Some(args[i].trim_end_matches('/').to_string());
+            }
+            "--config-dir" if i + 1 < args.len() => {
+                i += 1;
+                cfg_dir_override = Some(PathBuf::from(&args[i]));
+            }
+            "--json" => json_out = true,
+            other if !other.starts_with('-') => positionals.push(other.to_string()),
+            other => {
+                eprintln!("Unknown option for watch-add: {}", other);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+
+    if positionals.len() < 2 {
+        eprintln!(
+            "Usage: onehundo-desktop watch-add <canonical_game_id> <folder_path> [--url <url>] [--config-dir <dir>] [--json]"
+        );
+        std::process::exit(2);
+    }
+    let game_id = positionals[0].clone();
+    let raw_path = PathBuf::from(&positionals[1]);
+    let canon = std::fs::canonicalize(&raw_path).unwrap_or_else(|e| {
+        eprintln!("Invalid watch path '{}': {}", raw_path.display(), e);
+        std::process::exit(1);
+    });
+
+    if cfg_dir_override.is_none() || url.is_some() {
+        let base = url.as_deref().unwrap_or(DEFAULT_HEALTH_URL);
+        let endpoint = format!("{}/watches", base);
+        let payload = serde_json::json!({
+            "canonical_game_id": game_id,
+            "path": canon.display().to_string(),
+        })
+        .to_string();
+        match http_request("POST", &endpoint, None, Some(&payload), None) {
+            Ok(resp) if resp.status < 300 => {
+                if json_out {
+                    println!("{}", resp.body);
+                } else {
+                    println!("Bound watch override via onehundod: {} -> {}", game_id, canon.display());
+                }
+                return;
+            }
+            Ok(resp) => {
+                eprintln!("watch-add failed ({}): {}", resp.status, resp.body);
+                std::process::exit(1);
+            }
+            Err(e) if url.is_some() => {
+                eprintln!("Failed reaching daemon at {}: {}", endpoint, e);
+                std::process::exit(1);
+            }
+            Err(_) => {}
+        }
+    }
+
+    let cfg_dir = cfg_dir_override.unwrap_or_else(default_config_dir);
+    let mut cfg = load_or_init_config(&cfg_dir).unwrap_or_else(|e| {
+        eprintln!("Failed reading config: {}", e);
+        std::process::exit(1);
+    });
+    let entry = WatchedObservationDir {
+        path: canon.clone(),
+        canonical_game_id: Some(game_id.clone()),
+    };
+    if let Some(existing) = cfg.watched_observation_dirs.iter_mut().find(|w| w.path == canon) {
+        existing.canonical_game_id = entry.canonical_game_id.clone();
+    } else {
+        cfg.watched_observation_dirs.push(entry.clone());
+    }
+    if let Err(e) = save_config(&cfg_dir, &cfg) {
+        eprintln!("Failed saving config: {}", e);
+        std::process::exit(1);
+    }
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "watched_dir": entry,
+                "watched_dirs": cfg.watched_observation_dirs,
+            }))
+            .unwrap_or_default()
+        );
+    } else {
+        println!("Saved watch override (offline): {} -> {}", game_id, canon.display());
+    }
+}
+
+fn run_watch_remove(args: &[String]) {
+    let mut raw_path: Option<PathBuf> = None;
+    let mut url: Option<String> = None;
+    let mut cfg_dir_override: Option<PathBuf> = None;
+    let mut json_out = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--url" if i + 1 < args.len() => {
+                i += 1;
+                url = Some(args[i].trim_end_matches('/').to_string());
+            }
+            "--config-dir" if i + 1 < args.len() => {
+                i += 1;
+                cfg_dir_override = Some(PathBuf::from(&args[i]));
+            }
+            "--json" => json_out = true,
+            other if !other.starts_with('-') && raw_path.is_none() => {
+                raw_path = Some(PathBuf::from(other));
+            }
+            other => {
+                eprintln!("Unknown option for watch-remove: {}", other);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+
+    let Some(target) = raw_path else {
+        eprintln!("Usage: onehundo-desktop watch-remove <folder_path> [--url <url>] [--config-dir <dir>] [--json]");
+        std::process::exit(2);
+    };
+    let canon = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
+
+    if cfg_dir_override.is_none() || url.is_some() {
+        let base = url.as_deref().unwrap_or(DEFAULT_HEALTH_URL);
+        let endpoint = format!("{}/watches/remove", base);
+        let payload = serde_json::json!({
+            "path": canon.display().to_string(),
+        })
+        .to_string();
+        if let Ok(resp) = http_request("POST", &endpoint, None, Some(&payload), None) {
+            if resp.status < 300 {
+                if json_out {
+                    println!("{}", resp.body);
+                } else {
+                    println!("Removed watch override via onehundod: {}", canon.display());
+                }
+                return;
+            }
+        }
+    }
+
+    let cfg_dir = cfg_dir_override.unwrap_or_else(default_config_dir);
+    let mut cfg = load_or_init_config(&cfg_dir).unwrap_or_default();
+    let before = cfg.watched_observation_dirs.len();
+    cfg.watched_observation_dirs
+        .retain(|w| w.path != target && w.path != canon);
+    let removed = cfg.watched_observation_dirs.len() != before;
+    if removed {
+        let _ = save_config(&cfg_dir, &cfg);
+    }
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "removed": removed,
+                "watched_dirs": cfg.watched_observation_dirs,
+            }))
+            .unwrap_or_default()
+        );
+    } else {
+        println!("Removed={} watch override for {}", removed, canon.display());
+    }
+}
+
+fn run_launcher_status(args: &[String]) {
+    let mut game_id: Option<String> = None;
+    let mut url: Option<String> = None;
+    let mut json_out = false;
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--game-id" if i + 1 < args.len() => {
+                i += 1;
+                game_id = Some(args[i].clone());
+            }
+            "--url" if i + 1 < args.len() => {
+                i += 1;
+                url = Some(args[i].trim_end_matches('/').to_string());
+            }
+            "--json" => json_out = true,
+            other => {
+                eprintln!("Unknown option for launcher-status: {}", other);
+                std::process::exit(2);
+            }
+        }
+        i += 1;
+    }
+
+    let base = url.as_deref().unwrap_or(DEFAULT_HEALTH_URL);
+    let endpoint = if let Some(ref gid) = game_id {
+        format!("{}/v1/launchers/status?canonical_game_id={}", base, gid)
+    } else {
+        format!("{}/v1/launchers/status", base)
+    };
+    match http_request("GET", &endpoint, None, None, None) {
+        Ok(resp) if resp.status < 300 => {
+            if json_out {
+                println!("{}", resp.body);
+            } else {
+                let v: serde_json::Value =
+                    serde_json::from_str(&resp.body).unwrap_or(serde_json::Value::Null);
+                let games = v["games"].as_array().cloned().unwrap_or_default();
+                if games.is_empty() {
+                    println!("No launcher games reported.");
+                } else {
+                    for g in games {
+                        println!(
+                            "{} [{}] pack={} unlocked={}/{} ({}%) active={}",
+                            g["canonical_game_id"].as_str().unwrap_or("-"),
+                            g["launcher"].as_str().unwrap_or("-"),
+                            g["pack_id"].as_str().unwrap_or("none"),
+                            g["unlocked_count"].as_u64().unwrap_or(0),
+                            g["total_achievements"].as_u64().unwrap_or(0),
+                            g["completion_percent"].as_u64().unwrap_or(0),
+                            g["active"].as_bool().unwrap_or(false)
+                        );
+                    }
+                }
+            }
+        }
+        Ok(resp) => {
+            eprintln!("launcher-status failed ({}): {}", resp.status, resp.body);
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("Failed reaching daemon at {}: {}", endpoint, e);
+            std::process::exit(1);
+        }
     }
 }
 
@@ -718,6 +1046,10 @@ fn main() {
         "packs" => run_packs(&args),
         "mode" => run_mode(&args),
         "import-obs" => run_import_obs(&args),
+        "watches" => run_watches(&args),
+        "watch-add" => run_watch_add(&args),
+        "watch-remove" => run_watch_remove(&args),
+        "launcher-status" => run_launcher_status(&args),
         "notify-test" => run_notify_test(&args),
         "set-api-key" => {
             let key = match args.get(2) {

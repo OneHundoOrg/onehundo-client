@@ -46,6 +46,8 @@ fn print_help() {
          \t--packs-dir <path>        Additional directory to scan for .onehundo packs\n\
          \t--watch-dir <path>        Directory to watch for Plane C external observation exports\n\
          \t--watch-interval-ms <n>   Observation directory poll interval in ms (default: 5000)\n\
+         \t--watch-debounce-ms <n>   Save-file change settle debounce in ms (default: 500)\n\
+         \t--retroarch-addr <addr>   RetroArch UDP network cmd addr (default: 127.0.0.1:55355, 'none' to disable)\n\
          \t--mode <mode>             Initial progression mode: STANDARD, ENCORE, or SPECTATOR\n\
          \t--health-addr <addr>      Game Health HTTP bind addr (default: 127.0.0.1:19850, 'none' to disable)\n\
          \t--platform-url <url>      onehundo-platform base URL (e.g. https://api.onehundo.org)\n\
@@ -110,6 +112,20 @@ fn main() {
                 i += 1;
                 if let Ok(ms) = args[i].parse::<u64>() {
                     cfg.watch_poll_interval_ms = ms;
+                }
+            }
+            "--watch-debounce-ms" if i + 1 < args.len() => {
+                i += 1;
+                if let Ok(ms) = args[i].parse::<u64>() {
+                    cfg.watch_debounce_ms = ms;
+                }
+            }
+            "--retroarch-addr" if i + 1 < args.len() => {
+                i += 1;
+                if args[i] == "none" {
+                    cfg.retroarch_udp_addr = None;
+                } else {
+                    cfg.retroarch_udp_addr = Some(args[i].clone());
                 }
             }
             "--mode" if i + 1 < args.len() => {
@@ -241,10 +257,11 @@ fn main() {
         None
     };
 
-    let watch_handle = if !engine.config.watched_observation_dirs.is_empty() {
+    let watch_handle = {
         let eng = Arc::clone(&engine);
         let sd = Arc::clone(&shutdown);
         let interval_ms = engine.config.watch_poll_interval_ms.max(250);
+        let debounce_ms = engine.config.watch_debounce_ms;
         Some(thread::spawn(move || {
             let initial = eng.poll_watched_observation_dirs();
             if initial.imported > 0 || !initial.errors.is_empty() {
@@ -268,12 +285,30 @@ fn main() {
                 if sd.load(Ordering::Relaxed) || SIGNAL_STOP.load(Ordering::Relaxed) {
                     break;
                 }
-                let res = eng.poll_watched_observation_dirs();
+                let res = eng.poll_watched_observation_dirs_with_debounce(debounce_ms);
                 if res.imported > 0 || !res.errors.is_empty() {
                     println!(
                         "[onehundod-watch] imported={}, deduplicated={}, errors={:?}",
                         res.imported, res.deduplicated, res.errors
                     );
+                }
+            }
+        }))
+    };
+
+    let retroarch_handle = if engine.config.retroarch_udp_addr.is_some() {
+        let eng = Arc::clone(&engine);
+        let sd = Arc::clone(&shutdown);
+        Some(thread::spawn(move || {
+            while !sd.load(Ordering::Relaxed) && !SIGNAL_STOP.load(Ordering::Relaxed) {
+                let _ = eng.poll_retroarch_once();
+                let mut slept = 0u64;
+                while slept < 500
+                    && !sd.load(Ordering::Relaxed)
+                    && !SIGNAL_STOP.load(Ordering::Relaxed)
+                {
+                    thread::sleep(Duration::from_millis(100));
+                    slept += 100;
                 }
             }
         }))
@@ -324,6 +359,9 @@ fn main() {
         let _ = h.join();
     }
     if let Some(h) = watch_handle {
+        let _ = h.join();
+    }
+    if let Some(h) = retroarch_handle {
         let _ = h.join();
     }
     if let Some(h) = sync_handle {

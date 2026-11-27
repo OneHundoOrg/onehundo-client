@@ -17,6 +17,14 @@ fn default_watch_poll_interval_ms() -> u64 {
     5_000
 }
 
+fn default_watch_debounce_ms() -> u64 {
+    500
+}
+
+fn default_retroarch_udp_addr() -> Option<String> {
+    Some("127.0.0.1:55355".to_string())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WatchedObservationDir {
     pub path: PathBuf,
@@ -121,6 +129,10 @@ pub struct DaemonConfig {
     pub watched_observation_dirs: Vec<WatchedObservationDir>,
     #[serde(default = "default_watch_poll_interval_ms")]
     pub watch_poll_interval_ms: u64,
+    #[serde(default = "default_watch_debounce_ms")]
+    pub watch_debounce_ms: u64,
+    #[serde(default = "default_retroarch_udp_addr")]
+    pub retroarch_udp_addr: Option<String>,
 }
 
 impl Default for DaemonConfig {
@@ -144,6 +156,8 @@ impl Default for DaemonConfig {
             plane_a_max_frame_gaps_before_downgrade: default_plane_a_max_frame_gaps_before_downgrade(),
             watched_observation_dirs: Vec::new(),
             watch_poll_interval_ms: default_watch_poll_interval_ms(),
+            watch_debounce_ms: default_watch_debounce_ms(),
+            retroarch_udp_addr: default_retroarch_udp_addr(),
         }
     }
 }
@@ -228,10 +242,20 @@ pub fn load_or_init_config(config_dir: &Path) -> Result<DaemonConfig, String> {
         cfg.device_uuid = generate_uuid_v4();
         cfg.config_dir = config_dir.to_path_buf();
         let json = serde_json::to_string_pretty(&cfg).map_err(|e| e.to_string())?;
-        fs::write(&cfg_path, json)
+        write_secret_file(&cfg_path, json.as_bytes())
             .map_err(|e| format!("failed to write config '{}': {}", cfg_path.display(), e))?;
         Ok(cfg)
     }
+}
+
+/// Persist daemon configuration (`watched_observation_dirs`, etc.) atomically with `0600` mode.
+pub fn save_config(config_dir: &Path, cfg: &DaemonConfig) -> Result<(), String> {
+    fs::create_dir_all(config_dir)
+        .map_err(|e| format!("failed to create config dir '{}': {}", config_dir.display(), e))?;
+    let path = config_dir.join("config.json");
+    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    write_secret_file(&path, json.as_bytes())
+        .map_err(|e| format!("failed to write config '{}': {}", path.display(), e))
 }
 
 pub fn load_credentials(config_dir: &Path) -> Credentials {

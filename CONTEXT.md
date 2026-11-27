@@ -4,7 +4,7 @@
 > **Organization:** `OneHundoOrg` (`onehundo.org`)  
 > **Upstream Contracts:** [`onehundo-protocol`](https://github.com/OneHundoOrg/onehundo-protocol) (`v0.1.0`, Public, dual `MIT OR Apache-2.0`)  
 > **Cloud Target:** [`onehundo-platform`](https://github.com/OneHundoOrg/onehundo-platform) (Private, Proprietary; canonical domain `https://onehundo.org`, Zerops origin `https://app-3bb4-3000.prg1.zerops.app`)  
-> **Current Phase:** Phase 3 Complete — Ready for **Phase 4 (Community Authoring, Launch Integrations, Rarity & Competitive Lane)**
+> **Current Phase:** Phase 3 & Phase 4 Stage 1 Complete — Ready for Remaining **Phase 4 (Community Authoring, Ed25519 Signing, Rarity & Competitive Lane)**
 
 ---
 
@@ -33,7 +33,13 @@
 
 ---
 
-## 2. Phase 4 Scope & File Ownership (Next)
+### [x] Phase 4 Stage 1 — Mass Launcher, Decomp/Recomp & Emulator Adoption
+- **Declarative Save Watchers & Debounced Polling (`daemon/observation/external-importers/{declarative_save,watcher}.rs`, `daemon/packs/{manifest,matcher}.rs`):** Binary (magic signatures, bitflags, typed scalars), JSON, and INI/KV declarative watchers obeying strict path containment, `<= 32 MiB` bounded reads, `placeholder_template` guards, mode-isolated UUID seeds, `source_timestamp: None`, `LOCALLY_OBSERVED`/`LOCAL`/`UNVERIFIED` provenance, and `watch_debounce_ms` debouncing; multi-matcher resolution (`executable`, `app_id`, `save_path_glob`, `os`/`launcher` filtering).
+- **Manual Watch Overrides & Launcher/RetroArch Bridges (`daemon/core/{config,engine}.rs`, `daemon/ipc/retroarch.rs`, `daemon/diagnostics/server.rs`, `ui/game-health/mod.rs`, `apps/desktop/main.rs`):** Persistent `manual_watches` (`0600` config save), `GET/POST /watches`, `POST /watches/remove`, `POST /watches/poll`, `POST /v1/launchers/report`, `GET /v1/launchers/status` (+ `/launchers/*` aliases), RetroArch UDP network-command bridge (`127.0.0.1:55355`, `--retroarch-addr`), CLI commands `watches`, `watch-add`, `watch-remove`, `launcher-status`, integrations in `integrations/{playnite,launchbox,recomp-launchers,retroarch,mobile}/`, and 25 new Stage 1 starter `.onehundo` packs (28 total, all `onehundo-validate` verified) + `tests/stage1_watchers_and_bridge.rs`.
+
+---
+
+## 2. Phase 4 Remaining Scope & File Ownership (Next)
 
 **Objective:** Enable low-friction community `.onehundo` pack authoring, ship launch integrations (RetroArch, LaunchBox, Playnite, flagship recompilations), and add Ed25519 signature verification + `COMPETITIVE` trust-lane enforcement.
 

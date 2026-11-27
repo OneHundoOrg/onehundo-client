@@ -474,6 +474,7 @@ fn directory_watcher_and_spectator_mode_isolation_and_game_health_http_ui() {
             asset_archive_hash: None,
             platform_id: None,
             region: None,
+            ..Default::default()
         },
         IngestionPlane::MemoryArena,
         ProgressionMode::Standard,

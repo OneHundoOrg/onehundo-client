@@ -193,6 +193,7 @@ fn rcheevos_evaluator_advanced_ops_memaddr_parser_and_excessive_gap_downgrade() 
         semantic_rules: vec![],
         memory_rules: vec![rule],
         memory_stats: vec![],
+        save_watchers: vec![],
         pack_sha256: "0".repeat(64),
         mapped_oap_edition: None,
         source_path: "in-memory".into(),
@@ -212,6 +213,7 @@ fn rcheevos_evaluator_advanced_ops_memaddr_parser_and_excessive_gap_downgrade() 
             asset_archive_hash: None,
             platform_id: None,
             region: None,
+            ..Default::default()
         },
         IngestionPlane::MemoryArena,
         ProgressionMode::Standard,
@@ -319,6 +321,7 @@ fn single_onehundo_pack_produces_identical_runtime_observed_unlocks_across_emula
                     asset_archive_hash: None,
                     platform_id: None,
                     region: Some("USA".into()),
+                    ..Default::default()
                 })
                 .expect("rom_hash match");
             assert_eq!(m_emu.pack_id, "onehundo.plane_a.cross_runtime");
@@ -333,6 +336,7 @@ fn single_onehundo_pack_produces_identical_runtime_observed_unlocks_across_emula
                     asset_archive_hash: None,
                     platform_id: None,
                     region: None,
+                    ..Default::default()
                 })
                 .expect("recomp_game_id match");
             assert_eq!(m_recomp.pack_id, "onehundo.plane_a.cross_runtime");

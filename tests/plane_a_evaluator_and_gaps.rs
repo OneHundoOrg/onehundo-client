@@ -132,6 +132,7 @@ fn plane_a_rules_save_rewind_trust_downgrade_and_frame_gaps() {
             asset_archive_hash: None,
             platform_id: None,
             region: None,
+            ..Default::default()
         },
         IngestionPlane::MemoryArena,
         ProgressionMode::Standard,

@@ -11,6 +11,9 @@ pub enum MatcherType {
     PlatformId,
     SidecarUuid,
     AssetArchiveHash,
+    Executable,
+    AppId,
+    SavePathGlob,
 }
 
 impl MatcherType {
@@ -23,6 +26,9 @@ impl MatcherType {
             Self::BuildId => 4,
             Self::AssetArchiveHash => 5,
             Self::PlatformId => 6,
+            Self::AppId => 7,
+            Self::Executable => 8,
+            Self::SavePathGlob => 9,
         }
     }
 }
@@ -38,6 +44,10 @@ pub struct IdentityMatcher {
     pub region: Option<String>,
     #[serde(default)]
     pub revision: Option<String>,
+    #[serde(default)]
+    pub os: Option<String>,
+    #[serde(default)]
+    pub launcher: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +60,19 @@ pub struct MemoryRegionSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct RetroArchMemorySpec {
+    #[serde(default)]
+    pub use_network_cmd: Option<bool>,
+    #[serde(default)]
+    pub core_name: Option<String>,
+    #[serde(default)]
+    pub content_crc: Option<String>,
+    #[serde(default)]
+    pub poll_interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MemoryProfile {
     pub enabled: bool,
     pub architecture: String,
@@ -58,6 +81,8 @@ pub struct MemoryProfile {
     pub regions: Vec<MemoryRegionSpec>,
     #[serde(default)]
     pub rules_file: Option<String>,
+    #[serde(default)]
+    pub retroarch: Option<RetroArchMemorySpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,9 +116,22 @@ pub struct ObservationSourceSpec {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct WatchPathSpec {
+    pub os: String,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    pub path_glob: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationProfile {
     pub enabled: bool,
     pub sources: Vec<ObservationSourceSpec>,
+    #[serde(default)]
+    pub rules_file: Option<String>,
+    #[serde(default)]
+    pub watch_paths: Vec<WatchPathSpec>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +270,9 @@ fn default_cond_type() -> String {
 fn default_stat_event_kind() -> String {
     "STAT_SET".to_string()
 }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRule {
@@ -276,6 +317,119 @@ pub struct RulesDocument {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SaveMaskValue {
+    Int(u64),
+    Text(String),
+}
+
+impl SaveMaskValue {
+    pub fn as_u64(&self) -> Option<u64> {
+        match self {
+            Self::Int(n) => Some(*n),
+            Self::Text(s) => {
+                let t = s.trim();
+                if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+                    u64::from_str_radix(hex, 16).ok()
+                } else {
+                    t.parse::<u64>().ok()
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveConditionRule {
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub section: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    pub value_type: String,
+    #[serde(default)]
+    pub endianness: Option<String>,
+    #[serde(default)]
+    pub bit: Option<u8>,
+    #[serde(default)]
+    pub mask: Option<SaveMaskValue>,
+    pub op: String,
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveAchievementRule {
+    pub achievement_id: String,
+    #[serde(default = "default_true")]
+    pub all_of: bool,
+    pub conditions: Vec<SaveConditionRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveStatRule {
+    pub stat_key: String,
+    #[serde(default)]
+    pub offset: Option<u64>,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub section: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    pub value_type: String,
+    #[serde(default)]
+    pub endianness: Option<String>,
+    #[serde(default)]
+    pub bit: Option<u8>,
+    #[serde(default)]
+    pub mask: Option<SaveMaskValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveWatcherRule {
+    pub id: String,
+    pub source_type: String,
+    pub format: String,
+    pub file_glob: String,
+    #[serde(default)]
+    pub magic_hex: Option<String>,
+    #[serde(default)]
+    pub magic_ascii: Option<String>,
+    #[serde(default)]
+    pub magic_offset: Option<u64>,
+    #[serde(default)]
+    pub endianness: Option<String>,
+    #[serde(default)]
+    pub max_file_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub placeholder_template: bool,
+    #[serde(default)]
+    pub notes: Option<String>,
+    #[serde(default)]
+    pub achievement_rules: Vec<SaveAchievementRule>,
+    #[serde(default)]
+    pub stat_rules: Vec<SaveStatRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveRulesDocument {
+    pub schema_version: String,
+    pub canonical_game_id: String,
+    #[serde(default)]
+    pub notes: Option<String>,
+    pub watchers: Vec<SaveWatcherRule>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackSummary {
     pub pack_id: String,
     pub pack_version: Option<String>,
@@ -295,6 +449,7 @@ pub struct LoadedPack {
     pub semantic_rules: Vec<SemanticRule>,
     pub memory_rules: Vec<MemoryRule>,
     pub memory_stats: Vec<MemoryStatRule>,
+    pub save_watchers: Vec<SaveWatcherRule>,
     pub pack_sha256: String,
     pub mapped_oap_edition: Option<String>,
     pub source_path: String,
@@ -353,7 +508,11 @@ pub fn derive_mapped_oap_edition(manifest: &PackManifest) -> Option<String> {
         || manifest
             .matchers
             .iter()
-            .any(|m| m.matcher_type == MatcherType::PlatformId && m.value.eq_ignore_ascii_case("CUSA03173"))
+            .any(|m| {
+                m.matcher_type == MatcherType::PlatformId
+                    && (m.value.eq_ignore_ascii_case("CUSA03173")
+                        || m.value.eq_ignore_ascii_case("SPRJ0005"))
+            })
     {
         return Some("psn-provisional-bloodborne-ps4".to_string());
     }
@@ -361,6 +520,7 @@ pub fn derive_mapped_oap_edition(manifest: &PackManifest) -> Option<String> {
         return Some("ra-chronos".to_string());
     }
     if manifest.canonical_game_id == "nintendo.oot.longshot.pc"
+        || manifest.canonical_game_id == "nintendo.oot"
         || manifest
             .matchers
             .iter()
@@ -373,6 +533,16 @@ pub fn derive_mapped_oap_edition(manifest: &PackManifest) -> Option<String> {
         .iter()
         .find(|m| m.matcher_type == MatcherType::PlatformId)
         .map(|m| format!("platform_id:{}", m.value))
+}
+
+fn is_safe_archive_rel_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 256
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && path
+            .split('/')
+            .all(|seg| !seg.is_empty() && seg != "." && seg != "..")
 }
 
 pub fn validate_and_parse_manifest(
@@ -407,6 +577,14 @@ pub fn validate_and_parse_manifest(
         if m.value.is_empty() || m.value.len() > 256 {
             return Err(format!("matchers[{}].value invalid length", idx));
         }
+        if let Some(os) = &m.os {
+            if !matches!(
+                os.as_str(),
+                "windows" | "linux" | "macos" | "steamos" | "android" | "ios" | "bsd" | "any"
+            ) {
+                return Err(format!("matchers[{}].os '{}' invalid", idx, os));
+            }
+        }
     }
     if manifest.profiles.memory.is_none()
         && manifest.profiles.semantic.is_none()
@@ -418,15 +596,38 @@ pub fn validate_and_parse_manifest(
         if mem.regions.is_empty() {
             return Err("manifest.profiles.memory.regions must not be empty".into());
         }
+        if let Some(rules) = &mem.rules_file {
+            if !is_safe_archive_rel_path(rules) {
+                return Err(format!("unsafe memory.rules_file '{}'", rules));
+            }
+        }
     }
     if let Some(sem) = &manifest.profiles.semantic {
         if sem.producer_ids.is_empty() {
             return Err("manifest.profiles.semantic.producer_ids must not be empty".into());
         }
+        if let Some(rules) = &sem.rules_file {
+            if !is_safe_archive_rel_path(rules) {
+                return Err(format!("unsafe semantic.rules_file '{}'", rules));
+            }
+        }
     }
     if let Some(obs) = &manifest.profiles.observation {
         if obs.sources.is_empty() {
             return Err("manifest.profiles.observation.sources must not be empty".into());
+        }
+        if let Some(rules) = &obs.rules_file {
+            if !is_safe_archive_rel_path(rules) {
+                return Err(format!("unsafe observation.rules_file '{}'", rules));
+            }
+            if let Some(entries) = archive_entries {
+                if !entries.contains_key(rules) {
+                    return Err(format!(
+                        "observation.rules_file '{}' missing from archive",
+                        rules
+                    ));
+                }
+            }
         }
     }
     if manifest.achievements.is_empty() {
@@ -488,6 +689,7 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
     let mut semantic_rules = Vec::new();
     let mut memory_rules = Vec::new();
     let mut memory_stats = Vec::new();
+    let mut save_watchers = Vec::new();
 
     if let Some(sem) = &manifest.profiles.semantic {
         if let Some(rules_path) = &sem.rules_file {
@@ -512,6 +714,29 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
             }
         }
     }
+    if let Some(obs) = &manifest.profiles.observation {
+        if let Some(rules_path) = &obs.rules_file {
+            if let Some(raw) = entries.get(rules_path) {
+                let s = std::str::from_utf8(raw)
+                    .map_err(|_| format!("save rules file '{}' not valid UTF-8", rules_path))?;
+                let doc: SaveRulesDocument = serde_json::from_str(s)
+                    .map_err(|e| format!("failed parsing save rules file '{}': {}", rules_path, e))?;
+                if doc.schema_version != "0.1.0" {
+                    return Err(format!(
+                        "unsupported save rules schema_version '{}' in '{}'",
+                        doc.schema_version, rules_path
+                    ));
+                }
+                if doc.canonical_game_id != manifest.canonical_game_id {
+                    return Err(format!(
+                        "save rules '{}' canonical_game_id '{}' != manifest '{}'",
+                        rules_path, doc.canonical_game_id, manifest.canonical_game_id
+                    ));
+                }
+                save_watchers.extend(doc.watchers);
+            }
+        }
+    }
 
     let mapped_oap_edition = derive_mapped_oap_edition(&manifest);
     let pack_sha256 = sha256_hex(bytes);
@@ -521,6 +746,7 @@ pub fn load_pack_from_zip_bytes(bytes: &[u8], source_path: &str) -> Result<Loade
         semantic_rules,
         memory_rules,
         memory_stats,
+        save_watchers,
         pack_sha256,
         mapped_oap_edition,
         source_path: source_path.to_string(),

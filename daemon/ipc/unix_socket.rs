@@ -206,6 +206,7 @@ fn handle_ipc_client(
                         asset_archive_hash: None,
                         platform_id: hello.platform_id,
                         region: hello.region,
+                        ..Default::default()
                     };
                     let (info, matched) = engine.start_session(
                         hello.session_id,
