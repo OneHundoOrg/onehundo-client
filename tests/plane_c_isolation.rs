@@ -676,6 +676,8 @@ fn longshot_binary_save_watcher_and_spectator_non_mutation() {
         path: dir.join("longshot_save"),
         canonical_game_id: None,
     }];
+    // The Longshot pack watches ~/.local/share/longshot: keep it off the real user's saves.
+    cfg.watch_home_override = Some(dir.join("home"));
     cfg.notifications_enabled = false;
 
     let engine = DaemonEngine::initialize(cfg).expect("init longshot engine");

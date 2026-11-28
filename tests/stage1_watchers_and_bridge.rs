@@ -402,7 +402,7 @@ fn manual_watch_override_http_cli_and_launcher_bridge_with_retroarch_udp() {
     .unwrap();
     let report_body = serde_json::json!({
         "launcher": "playnite",
-        "executable": "C:/Games/Longshot/longshot.exe",
+        "executable": "C:/Games/ShipOfHarkinian/soh.exe",
         "save_dir": launcher_save.display().to_string(),
         "os": "windows",
         "active": true

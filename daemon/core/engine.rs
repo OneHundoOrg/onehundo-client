@@ -1018,11 +1018,12 @@ impl DaemonEngine {
         }
         let mut dirs = self.list_watch_overrides();
         let active_procs = self.detected_processes.lock().unwrap().clone();
-        let (extra_globs, pack_watch_dirs) = {
+        let (extra_globs, pack_watch_dirs, has_longshot_pack) = {
             let packs = self.packs.lock().unwrap();
             (
                 packs.all_watch_file_globs(),
-                resolve_pack_watch_dirs(&packs),
+                resolve_pack_watch_dirs_with_home(&packs, self.config.watch_home_override.as_deref()),
+                packs.get(LONGSHOT_PACK_GAME_ID).is_some(),
             )
         };
         for runtime_dir in discover_process_observation_dirs_with_globs(&active_procs, &extra_globs) {
@@ -1045,7 +1046,16 @@ impl DaemonEngine {
             files_changed: changed.len(),
             ..Default::default()
         };
+        // The same save can be reached through several overlapping watch roots (config overrides,
+        // process-discovered save dirs, pack watch paths) that each carry a different owning
+        // `canonical_game_id`. Import each file once, under a single deterministic owner, so one
+        // unlock never lands under two packs (double notifications + mis-mapped achievement ids).
+        let mut seen_files: HashSet<PathBuf> = HashSet::new();
         for (file_path, game_id) in changed {
+            if !seen_files.insert(file_path.clone()) {
+                continue;
+            }
+            let game_id = owning_game_id_for_save(&file_path, game_id, has_longshot_pack);
             match self.import_plane_c_path(&file_path, game_id, None, false) {
                 Ok(summary) => {
                     out.imported += summary.imported;
@@ -2165,6 +2175,32 @@ fn is_shared_multi_game_dir(resolved_dir: &Path) -> bool {
         || (norm.ends_with("/trophy") && !norm.contains("/cusa") && !norm.contains("/npwr"))
 }
 
+/// Pack that owns the achievement-id space emitted by the native Longshot `progress.sav` importer.
+const LONGSHOT_PACK_GAME_ID: &str = "nintendo.oot.longshot.pc";
+
+fn is_longshot_save_name(path_or_glob: &str) -> bool {
+    path_or_glob.to_ascii_lowercase().contains("progress.sav")
+}
+
+/// Longshot binary saves are always parsed by `longshot.rs`, whose `a01`..`a13` ids belong to the
+/// `nintendo.oot.longshot.pc` pack. Other packs that merely match the Longshot executable (e.g. the
+/// multi-fork `nintendo.oot.forks` pack) use a different id layout, so they must never own these files.
+fn owning_game_id_for_save(
+    file: &Path,
+    watch_game_id: Option<String>,
+    has_longshot_pack: bool,
+) -> Option<String> {
+    let is_progress_sav = file
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("progress.sav"));
+    if has_longshot_pack && is_progress_sav {
+        Some(LONGSHOT_PACK_GAME_ID.to_string())
+    } else {
+        watch_game_id
+    }
+}
+
 pub fn resolve_pack_watch_dirs_with_home(
     packs: &PackRegistry,
     home_override: Option<&Path>,
@@ -2175,7 +2211,7 @@ pub fn resolve_pack_watch_dirs_with_home(
         "macos" => "macos",
         other => other,
     };
-    let has_longshot_pack = packs.get("nintendo.oot.longshot.pc").is_some();
+    let has_longshot_pack = packs.get(LONGSHOT_PACK_GAME_ID).is_some();
     let mut resolved_order: Vec<PathBuf> = Vec::new();
     let mut owners: HashMap<PathBuf, Option<String>> = HashMap::new();
 
@@ -2190,10 +2226,8 @@ pub fn resolve_pack_watch_dirs_with_home(
             if !watch_os_matches(&wp.os, current_os) {
                 continue;
             }
-            let effective_gid = if has_longshot_pack
-                && wp.path_glob.to_ascii_lowercase().contains("progress.sav")
-            {
-                "nintendo.oot.longshot.pc"
+            let effective_gid = if has_longshot_pack && is_longshot_save_name(&wp.path_glob) {
+                LONGSHOT_PACK_GAME_ID
             } else {
                 pack.manifest.canonical_game_id.as_str()
             };
@@ -2260,6 +2294,35 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn longshot_progress_sav_is_always_owned_by_longshot_pack() {
+        let sav = Path::new("/saves/save/uid/slot_01/progress.sav");
+        // Process-discovered dir attributed to the multi-fork pack must not steal Longshot saves.
+        assert_eq!(
+            owning_game_id_for_save(sav, Some("nintendo.oot.switch2".into()), true).as_deref(),
+            Some(LONGSHOT_PACK_GAME_ID)
+        );
+        assert_eq!(
+            owning_game_id_for_save(sav, None, true).as_deref(),
+            Some(LONGSHOT_PACK_GAME_ID)
+        );
+        // Without the Longshot pack installed, keep the watch root's owner.
+        assert_eq!(
+            owning_game_id_for_save(sav, Some("nintendo.oot.switch2".into()), false).as_deref(),
+            Some("nintendo.oot.switch2")
+        );
+        // Non-Longshot saves keep their watch root's owner.
+        assert_eq!(
+            owning_game_id_for_save(
+                Path::new("/soh/Save/file1.sav"),
+                Some("nintendo.oot.switch2".into()),
+                true
+            )
+            .as_deref(),
+            Some("nintendo.oot.switch2")
+        );
     }
 
     #[test]

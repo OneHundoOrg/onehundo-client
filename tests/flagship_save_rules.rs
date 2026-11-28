@@ -86,7 +86,7 @@ fn ship_of_harkinian_json_rules_unlock_idempotency_and_switch2_fallback() {
     let oot_pack = reg
         .get("nintendo.oot.forks")
         .expect("nintendo.oot.forks pack must exist");
-    assert_eq!(oot_pack.manifest.pack_version.as_deref(), Some("0.2.0"));
+    assert_eq!(oot_pack.manifest.pack_version.as_deref(), Some("0.3.0"));
     assert_eq!(oot_pack.manifest.achievements.len(), 12);
 
     // Switch 2 fork fallback matchers still resolve cleanly, and placeholder template emits 0 unlocks.

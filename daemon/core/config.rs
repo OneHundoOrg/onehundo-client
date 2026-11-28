@@ -183,6 +183,10 @@ pub struct DaemonConfig {
     pub account_username: Option<String>,
     #[serde(default)]
     pub tracking_paused: bool,
+    /// Home directory pack `watch_paths` (`~/...`) resolve against instead of `$HOME`; for tests,
+    /// so a pack's watch paths never reach the real user's saves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_home_override: Option<PathBuf>,
 }
 
 impl Default for DaemonConfig {
@@ -210,6 +214,7 @@ impl Default for DaemonConfig {
             retroarch_udp_addr: default_retroarch_udp_addr(),
             account_username: None,
             tracking_paused: false,
+            watch_home_override: None,
         }
     }
 }

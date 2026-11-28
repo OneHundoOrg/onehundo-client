@@ -1000,7 +1000,12 @@ mod tests {
         let ids: Vec<&str> = detected.iter().map(|m| m.canonical_game_id.as_str()).collect();
         assert!(ids.contains(&"sony.bloodborne"), "detected={:?}", detected);
         assert!(ids.contains(&"nintendo.majoras_mask"), "detected={:?}", detected);
-        assert!(ids.contains(&"nintendo.oot.switch2"), "detected={:?}", detected);
+        // Longshot is owned by its own pack (a01..a13 ids from longshot.rs), never the multi-fork pack.
+        assert!(
+            detected.iter().any(|m| m.pid == 1005 && m.pack_id == "nintendo.oot.longshot.pc"),
+            "detected={:?}",
+            detected
+        );
         assert_eq!(detected.len(), 4);
         assert!(detected
             .iter()

@@ -433,19 +433,17 @@ def build_all() -> list[Path]:
             "manifest.json": {
                 "manifest_version": "0.1.0",
                 "pack_id": "nintendo.oot.forks",
-                "pack_version": "0.2.0",
+                "pack_version": "0.3.0",
                 "canonical_game_id": "nintendo.oot.switch2",
                 "title": "The Legend of Zelda: Ocarina of Time",
                 "authors": ["OneHundoOrg"],
                 "matchers": [
-                    {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "longshot", "os": "any"},
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "project_relink", "os": "any"},
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "triforce", "os": "any"},
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "rekarina", "os": "any"},
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "fritchii", "os": "any"},
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "lichii", "os": "any"},
                     {"matcher_type": "recomp_game_id", "algorithm": "exact", "value": "ship_of_harkinian", "os": "any"},
-                    {"matcher_type": "executable", "algorithm": "glob", "value": "*longshot*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*relink*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*triforce*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*rekarina*", "os": "any"},
@@ -453,29 +451,24 @@ def build_all() -> list[Path]:
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*lichii*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*soh*", "os": "any"},
                     {"matcher_type": "executable", "algorithm": "glob", "value": "*ShipOfHarkinian*", "os": "any"},
-                    {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/progress.sav", "os": "any"},
                     {"matcher_type": "save_path_glob", "algorithm": "glob", "value": "**/Save/file*.sav", "os": "any"},
                 ],
                 "profiles": {
                     "semantic": {
                         "enabled": True,
-                        "producer_ids": ["longshot", "project_relink", "triforce", "rekarina", "fritchii", "lichii", "ship_of_harkinian"],
+                        "producer_ids": ["project_relink", "triforce", "rekarina", "fritchii", "lichii", "ship_of_harkinian"],
                     },
                     "observation": {
                         "enabled": True,
                         "rules_file": "rules/save.json",
                         "sources": [
-                            {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/progress.sav"},
                             {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/soh*.json"},
                             {"source_type": "save_file", "evidence_class": "LOCALLY_OBSERVED", "file_glob": "**/file*.sav"},
                         ],
                         "watch_paths": [
-                            {"os": "linux", "path_glob": "~/.local/share/longshot/**/progress.sav"},
-                            {"os": "steamos", "path_glob": "~/.local/share/longshot/**/progress.sav"},
                             {"os": "linux", "path_glob": "~/.local/share/soh/Save/**"},
                             {"os": "linux", "path_glob": "~/.config/soh/Save/**"},
                             {"os": "steamos", "path_glob": "~/.var/app/com.harbourmasters.ShipOfHarkinian/data/soh/Save/**"},
-                            {"os": "windows", "path_glob": "%APPDATA%/Longshot/**/progress.sav"},
                             {"os": "windows", "path_glob": "%APPDATA%/Ship of Harkinian/Save/**"},
                             {"os": "macos", "path_glob": "~/Library/Application Support/Ship of Harkinian/Save/**"},
                             {"os": "android", "path_glob": "/storage/emulated/0/Android/data/com.dishii.soh/files/Save/**"},
@@ -500,7 +493,7 @@ def build_all() -> list[Path]:
             "rules/save.json": {
                 "schema_version": "0.1.0",
                 "canonical_game_id": "nintendo.oot.switch2",
-                "notes": "Ship of Harkinian JSON save watchers (soh*.json & Save/file*.sav) plus progress.sav / Switch 2 fork fallback template (Longshot progress.sav binary parsing is handled natively by longshot.rs).",
+                "notes": "Ship of Harkinian JSON save watchers (soh*.json & Save/file*.sav) plus Switch 2 fork fallback template. Longshot is owned exclusively by the nintendo.oot.longshot.pc pack (native progress.sav parsing in longshot.rs, a01-a13 id layout), so this pack never matches Longshot executables or saves.",
                 "watchers": [
                     {
                         "id": "soh_json_save",
